@@ -19,6 +19,7 @@ class ServerConfigurationPanel(
     private lateinit var alwaysAllowWebSocketHistoryCheckBox: JCheckBox
     private lateinit var alwaysAllowOrganizerCheckBox: JCheckBox
     private lateinit var alwaysAllowSitemapCheckBox: JCheckBox
+    private lateinit var alwaysAllowCookieJarCheckBox: JCheckBox
 
     init {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -109,6 +110,14 @@ class ServerConfigurationPanel(
             config.requireDataAccessApproval
         ) { config.alwaysAllowSitemap = it }
         add(alwaysAllowSitemapCheckBox)
+        add(createVerticalStrut(Design.Spacing.SM))
+
+        alwaysAllowCookieJarCheckBox = createIndentedCheckBox(
+            "Always allow cookie jar access",
+            config.alwaysAllowCookieJar,
+            config.requireDataAccessApproval
+        ) { config.alwaysAllowCookieJar = it }
+        add(alwaysAllowCookieJarCheckBox)
         add(createVerticalStrut(Design.Spacing.MD))
 
         val filterConfigCredentialsCheckBox = createCheckBoxWithSubtitle(
@@ -145,15 +154,18 @@ class ServerConfigurationPanel(
                 config.alwaysAllowWebSocketHistory = false
                 config.alwaysAllowOrganizer = false
                 config.alwaysAllowSitemap = false
+                config.alwaysAllowCookieJar = false
                 alwaysAllowHttpHistoryCheckBox.isSelected = false
                 alwaysAllowWebSocketHistoryCheckBox.isSelected = false
                 alwaysAllowOrganizerCheckBox.isSelected = false
                 alwaysAllowSitemapCheckBox.isSelected = false
+                alwaysAllowCookieJarCheckBox.isSelected = false
             }
             alwaysAllowHttpHistoryCheckBox.isEnabled = enabled
             alwaysAllowWebSocketHistoryCheckBox.isEnabled = enabled
             alwaysAllowOrganizerCheckBox.isEnabled = enabled
             alwaysAllowSitemapCheckBox.isEnabled = enabled
+            alwaysAllowCookieJarCheckBox.isEnabled = enabled
         }
     }
 
@@ -163,6 +175,7 @@ class ServerConfigurationPanel(
             alwaysAllowWebSocketHistoryCheckBox.isSelected = config.alwaysAllowWebSocketHistory
             alwaysAllowOrganizerCheckBox.isSelected = config.alwaysAllowOrganizer
             alwaysAllowSitemapCheckBox.isSelected = config.alwaysAllowSitemap
+            alwaysAllowCookieJarCheckBox.isSelected = config.alwaysAllowCookieJar
         }
     }
 

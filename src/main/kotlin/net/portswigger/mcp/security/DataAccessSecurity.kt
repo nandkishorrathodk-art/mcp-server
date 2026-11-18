@@ -4,7 +4,7 @@ import net.portswigger.mcp.config.Dialogs
 import net.portswigger.mcp.config.McpConfig
 
 enum class DataAccessType() {
-    HTTP_HISTORY(), WEBSOCKET_HISTORY(), ORGANIZER(), SITEMAP();
+    HTTP_HISTORY(), WEBSOCKET_HISTORY(), ORGANIZER(), SITEMAP(), COOKIE_JAR();
 }
 
 interface DataAccessApprovalHandler {
@@ -20,6 +20,7 @@ class SwingDataAccessApprovalHandler : DataAccessApprovalHandler {
             DataAccessType.WEBSOCKET_HISTORY -> "WebSocket history"
             DataAccessType.ORGANIZER -> "Organizer items"
             DataAccessType.SITEMAP -> "site map"
+            DataAccessType.COOKIE_JAR -> "cookie jar"
         }
 
         val message = buildString {
@@ -48,6 +49,7 @@ class SwingDataAccessApprovalHandler : DataAccessApprovalHandler {
                     DataAccessType.WEBSOCKET_HISTORY -> config.alwaysAllowWebSocketHistory = true
                     DataAccessType.ORGANIZER -> config.alwaysAllowOrganizer = true
                     DataAccessType.SITEMAP -> config.alwaysAllowSitemap = true
+                    DataAccessType.COOKIE_JAR -> config.alwaysAllowCookieJar = true
                 }
                 true
             }
@@ -73,6 +75,7 @@ object DataAccessSecurity {
             DataAccessType.WEBSOCKET_HISTORY -> config.alwaysAllowWebSocketHistory
             DataAccessType.ORGANIZER -> config.alwaysAllowOrganizer
             DataAccessType.SITEMAP -> config.alwaysAllowSitemap
+            DataAccessType.COOKIE_JAR -> config.alwaysAllowCookieJar
         }
 
         if (isAlwaysAllowed) {

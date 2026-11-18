@@ -102,7 +102,13 @@ The server exposes the following tools. Community Edition exposes a subset; Scan
 | `generate_report` | Generates an HTML/XML Scanner report for site map issues (Pro). |
 | `generate_collaborator_payload` / `get_collaborator_interactions` | Burp Collaborator OOB testing (Pro). |
 | `set_task_execution_engine_state` / `set_proxy_intercept_state` | Controls the task engine and proxy intercept (requires approval). |
-| `get_burp_state` | Reports Burp version, edition, project and tool state. |
+| `get_burp_state` | Reports Burp version, edition, project, extension and tool state. |
+| `get_cookies` | Lists cookies in Burp's Cookie Jar. |
+| `set_cookie` | Adds a cookie to Burp's Cookie Jar (requires approval). |
+| `create_websocket` / `send_websocket_message` / `read_websocket_messages` / `close_websocket` | Opens and drives a WebSocket to a target (Pro, requires approval). |
+| `ask_burp_ai` | Sends a prompt to Burp's built-in AI (Pro with AI enabled). |
+| `import_bambda` | Imports a Bambda script into Burp (requires approval). |
+| `persist_value` / `read_persisted_value` / `delete_persisted_value` / `list_persisted_keys` | Read and write the extension's persistent data store. |
 | `url_encode` / `url_decode` / `base64_encode` / `base64_decode` | Encoding utilities (optional encoding/option variants). |
 | `html_encode` / `html_decode` | HTML encoding utilities (optional encoding variants). |
 | `ascii_to_hex` / `hex_to_ascii` | Hex conversion utilities. |

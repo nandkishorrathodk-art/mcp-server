@@ -16,7 +16,11 @@ enum class ActionType {
     TASK_ENGINE,
     ORGANIZER,
     SITEMAP,
-    CONFIG
+    CONFIG,
+    WEBSOCKET,
+    COOKIE_JAR,
+    BAMBDA,
+    PERSISTENCE
 }
 
 interface ActionApprovalHandler {

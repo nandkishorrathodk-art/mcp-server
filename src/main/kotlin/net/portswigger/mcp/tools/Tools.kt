@@ -1,6 +1,8 @@
 package net.portswigger.mcp.tools
 
 import burp.api.montoya.MontoyaApi
+import burp.api.montoya.ai.chat.PromptException
+import burp.api.montoya.bambda.BambdaImportResult
 import burp.api.montoya.burpsuite.TaskExecutionEngine.TaskExecutionEngineState.PAUSED
 import burp.api.montoya.burpsuite.TaskExecutionEngine.TaskExecutionEngineState.RUNNING
 import burp.api.montoya.collaborator.InteractionFilter
@@ -582,7 +584,7 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
         "Intercept has been ${if (intercepting) "enabled" else "disabled"}"
     }
 
-    mcpTool("get_burp_state", "Reports Burp Suite environment and current tool state: version, edition, project, proxy intercept and task execution engine state.") {
+    mcpTool("get_burp_state", "Reports Burp Suite environment and current tool state: version, edition, project, extension, proxy intercept and task execution engine state.") {
         val version = api.burpSuite().version()
         val project = api.project()
         buildString {
@@ -591,6 +593,8 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
             appendLine("Edition: ${version.edition().displayName()}")
             appendLine("Build number: ${version.buildNumber()}")
             appendLine("Project: ${project.name()} (${project.id()})")
+            appendLine("Extension: ${api.extension().filename()} (BApp: ${api.extension().isBapp()})")
+            appendLine("AI enabled: ${api.ai().isEnabled()}")
             appendLine("Proxy intercept: ${if (api.proxy().isInterceptEnabled()) "enabled" else "disabled"}")
             appendLine("Task execution engine: ${api.burpSuite().taskExecutionEngine().state.name.lowercase()}")
         }
@@ -616,6 +620,195 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
     registerSiteMapTools(api, config)
     registerHandoffTools(api, config)
     registerExtraUtilityTools(api, config)
+    registerExtendedTools(api, config)
+}
+
+/**
+ * Tools that reach parts of the Montoya API the core toolset does not cover:
+ * Cookie Jar, live WebSockets, Burp AI, Bambdas and the extension data store.
+ */
+private fun Server.registerExtendedTools(api: MontoyaApi, config: McpConfig) {
+    mcpTool("get_cookies", "Lists cookies in Burp's Cookie Jar, including domain, path and expiry.") {
+        val allowed = checkDataAccessOrDeny(DataAccessType.COOKIE_JAR, config, api, "cookie jar")
+        if (!allowed) return@mcpTool "Cookie jar access denied by Burp Suite"
+
+        val cookies = api.http().cookieJar().cookies()
+        if (cookies.isEmpty()) return@mcpTool "No cookies in the cookie jar"
+
+        cookies.joinToString("\n") { cookie ->
+            buildString {
+                append("${cookie.name()}=${cookie.value()}; domain=${cookie.domain()}; path=${cookie.path()}")
+                cookie.expiration().ifPresent { append("; expires=${it}") }
+            }
+        }
+    }
+
+    mcpTool<SetCookie>(
+        "Adds a cookie to Burp's Cookie Jar. Changes the user's session state and requires approval. " +
+        "The cookie is used for subsequent requests to matching domains."
+    ) {
+        val allowed = ActionApprovalSecurity.checkActionPermission(
+            ActionType.COOKIE_JAR, "set cookie $name for $domain", config
+        )
+        if (!allowed) return@mcpTool "Set cookie denied by Burp Suite"
+
+        val expires = expiration?.let {
+            try {
+                java.time.ZonedDateTime.parse(it)
+            } catch (_: java.time.format.DateTimeParseException) {
+                return@mcpTool "Invalid expiration '$it'. Use an ISO-8601 timestamp, e.g. 2030-01-01T00:00:00Z."
+            }
+        }
+
+        api.http().cookieJar().setCookie(name, value, path, domain, expires)
+        "Cookie set: $name for $domain"
+    }
+
+    val websockets = java.util.concurrent.ConcurrentHashMap<String, burp.api.montoya.websocket.extension.ExtensionWebSocket>()
+    val websocketMessages = java.util.concurrent.ConcurrentHashMap<String, MutableList<String>>()
+    val websocketCounter = java.util.concurrent.atomic.AtomicInteger(0)
+
+    mcpTool<CreateWebsocket>(
+        "Opens a WebSocket to a target (Professional only). Requires approval. Optionally sends an initial text " +
+        "message. Returns a socket ID used by send_websocket_message, read_websocket_messages and close_websocket."
+    ) {
+        val allowed = ActionApprovalSecurity.checkActionPermission(
+            ActionType.WEBSOCKET, "open WebSocket to $targetHostname:$targetPort$path", config
+        )
+        if (!allowed) return@mcpTool "Open WebSocket denied by Burp Suite"
+
+        if (!isUrlInScope({ "https://$targetHostname:$targetPort$path" }, config, api)) {
+            return@mcpTool "Open WebSocket denied: target is out of scope"
+        }
+
+        val creation = api.websockets().createWebSocket(toMontoyaService(), path)
+        val socket = creation.webSocket().orElse(null)
+            ?: return@mcpTool "WebSocket connection failed: ${creation.status()}"
+
+        val id = "ws-${websocketCounter.incrementAndGet()}"
+        val received = java.util.Collections.synchronizedList(mutableListOf<String>())
+        websockets[id] = socket
+        websocketMessages[id] = received
+
+        socket.registerMessageHandler(object : burp.api.montoya.websocket.extension.ExtensionWebSocketMessageHandler {
+            override fun textMessageReceived(textMessage: burp.api.montoya.websocket.TextMessage) {
+                received.add("IN: ${textMessage.payload()}")
+            }
+
+            override fun binaryMessageReceived(binaryMessage: burp.api.montoya.websocket.BinaryMessage) {
+                received.add("IN (binary): ${binaryMessage.payload().length()} bytes")
+            }
+        })
+
+        if (textMessage != null) {
+            socket.sendTextMessage(textMessage)
+        }
+
+        "Opened WebSocket $id to $targetHostname:$targetPort$path" +
+            if (textMessage != null) " and sent an initial message" else ""
+    }
+
+    mcpTool<SendWebsocketMessage>("Sends a text message on a WebSocket opened by create_websocket. Requires approval.") {
+        val socket = websockets[socketId] ?: return@mcpTool "No such WebSocket: $socketId"
+
+        val allowed = ActionApprovalSecurity.checkActionPermission(
+            ActionType.WEBSOCKET, "send message on $socketId", config
+        )
+        if (!allowed) return@mcpTool "Send WebSocket message denied by Burp Suite"
+
+        socket.sendTextMessage(message)
+        "Message sent on $socketId"
+    }
+
+    mcpTool<ReadWebsocketMessages>("Reads messages received on a WebSocket opened by create_websocket") {
+        val received = websocketMessages[socketId] ?: return@mcpTool "No such WebSocket: $socketId"
+        val snapshot = synchronized(received) { received.toList() }
+        if (snapshot.isEmpty()) "No messages received on $socketId" else snapshot.joinToString("\n")
+    }
+
+    mcpTool<CloseWebsocket>("Closes a WebSocket opened by create_websocket. Requires approval.") {
+        val socket = websockets.remove(socketId) ?: return@mcpTool "No such WebSocket: $socketId"
+        websocketMessages.remove(socketId)
+
+        val allowed = ActionApprovalSecurity.checkActionPermission(
+            ActionType.WEBSOCKET, "close $socketId", config
+        )
+        if (!allowed) return@mcpTool "Close WebSocket denied by Burp Suite"
+
+        socket.close()
+        "Closed WebSocket $socketId"
+    }
+
+    mcpTool<AskBurpAi>(
+        "Sends a prompt to Burp's built-in AI (Professional with AI enabled). " +
+        "Optionally supply a system message and a temperature (0.0-1.0)."
+    ) {
+        val ai = api.ai()
+        if (!ai.isEnabled()) {
+            return@mcpTool "Burp AI is not enabled. Enable it in Burp's AI settings (Professional only)."
+        }
+
+        val messages = buildList {
+            systemMessage?.let { add(burp.api.montoya.ai.chat.Message.systemMessage(it)) }
+            add(burp.api.montoya.ai.chat.Message.userMessage(prompt))
+        }.toTypedArray()
+
+        try {
+            val options = temperature?.let {
+                burp.api.montoya.ai.chat.PromptOptions.promptOptions().withTemperature(it)
+            }
+            val response = if (options != null) {
+                ai.prompt().execute(options, *messages)
+            } else {
+                ai.prompt().execute(*messages)
+            }
+            response.content()
+        } catch (e: PromptException) {
+            "Burp AI prompt failed: ${e.message}"
+        }
+    }
+
+    mcpTool<ImportBambda>(
+        "Imports a Bambda script into Burp. Changes the user's Burp state and requires approval. " +
+        "Returns the import status and any errors."
+    ) {
+        val allowed = ActionApprovalSecurity.checkActionPermission(
+            ActionType.BAMBDA, "import a Bambda script", config
+        )
+        if (!allowed) return@mcpTool "Import Bambda denied by Burp Suite"
+
+        val result: BambdaImportResult = api.bambda().importBambda(script)
+        buildString {
+            appendLine("Status: ${result.status()}")
+            val errors = result.importErrors()
+            if (errors.isNotEmpty()) {
+                appendLine("Errors:")
+                errors.forEach { appendLine("  $it") }
+            }
+        }.trim()
+    }
+
+    mcpTool<PersistValue>(
+        "Stores a string value in the extension's persistent data store, keyed by name. " +
+        "Survives restarts and is shared across projects."
+    ) {
+        api.persistence().extensionData().setString(key, value)
+        "Stored value under key '$key'"
+    }
+
+    mcpTool<ReadPersistedValue>("Reads a string value from the extension's persistent data store by key") {
+        api.persistence().extensionData().getString(key) ?: "<no value for key '$key'>"
+    }
+
+    mcpTool<DeletePersistedValue>("Deletes a value from the extension's persistent data store by key") {
+        api.persistence().extensionData().deleteString(key)
+        "Deleted key '$key'"
+    }
+
+    mcpTool("list_persisted_keys", "Lists the keys in the extension's persistent data store.") {
+        val keys = api.persistence().extensionData().stringKeys()
+        if (keys.isEmpty()) "No persisted keys" else keys.sorted().joinToString("\n")
+    }
 }
 
 private fun Server.registerScannerControlTools(api: MontoyaApi, config: McpConfig) {
@@ -1044,3 +1237,49 @@ data class GenerateCollaboratorPayload(
 data class GetCollaboratorInteractions(
     val payloadId: String? = null
 )
+
+@Serializable
+data class SetCookie(
+    val name: String,
+    val value: String,
+    val domain: String,
+    val path: String? = null,
+    val expiration: String? = null
+)
+
+@Serializable
+data class CreateWebsocket(
+    override val targetHostname: String,
+    override val targetPort: Int,
+    override val usesHttps: Boolean,
+    val path: String,
+    val textMessage: String? = null
+) : HttpServiceParams
+
+@Serializable
+data class SendWebsocketMessage(val socketId: String, val message: String)
+
+@Serializable
+data class ReadWebsocketMessages(val socketId: String)
+
+@Serializable
+data class CloseWebsocket(val socketId: String)
+
+@Serializable
+data class AskBurpAi(
+    val prompt: String,
+    val systemMessage: String? = null,
+    val temperature: Double? = null
+)
+
+@Serializable
+data class ImportBambda(val script: String)
+
+@Serializable
+data class PersistValue(val key: String, val value: String)
+
+@Serializable
+data class ReadPersistedValue(val key: String)
+
+@Serializable
+data class DeletePersistedValue(val key: String)

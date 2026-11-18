@@ -10,6 +10,8 @@ import burp.api.montoya.http.HttpMode
 import burp.api.montoya.http.HttpProtocol
 import burp.api.montoya.http.message.HttpHeader
 import burp.api.montoya.http.message.requests.HttpRequest
+import burp.api.montoya.http.sessions.CookieJar
+import burp.api.montoya.persistence.Persistence
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
 import burp.api.montoya.proxy.Proxy
@@ -1515,6 +1517,266 @@ class ToolsKtTest {
     }
 
     @Nested
+    inner class ExtendedToolsTests {
+        @Test
+        fun `get cookies should list cookie jar contents`() {
+            val http = mockk<Http>()
+            val cookieJar = mockk<CookieJar>()
+            val cookie = mockk<burp.api.montoya.http.message.Cookie>()
+
+            every { api.http() } returns http
+            every { http.cookieJar() } returns cookieJar
+            every { cookieJar.cookies() } returns listOf(cookie)
+            every { cookie.name() } returns "session"
+            every { cookie.value() } returns "abc123"
+            every { cookie.domain() } returns "example.com"
+            every { cookie.path() } returns "/"
+            every { cookie.expiration() } returns Optional.empty()
+
+            runBlocking {
+                val result = client.callTool("get_cookies", emptyMap())
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.contains("session=abc123"), "unexpected: $text")
+                assertTrue(text.contains("example.com"), "unexpected: $text")
+            }
+        }
+
+        @Test
+        fun `get cookies should report empty jar`() {
+            val http = mockk<Http>()
+            val cookieJar = mockk<CookieJar>()
+
+            every { api.http() } returns http
+            every { http.cookieJar() } returns cookieJar
+            every { cookieJar.cookies() } returns emptyList()
+
+            runBlocking {
+                val result = client.callTool("get_cookies", emptyMap())
+                delay(100)
+                assertTrue(result.expectTextContent().contains("No cookies"))
+            }
+        }
+
+        @Test
+        fun `set cookie should add cookie to the jar`() {
+            val http = mockk<Http>()
+            val cookieJar = mockk<CookieJar>()
+
+            every { api.http() } returns http
+            every { http.cookieJar() } returns cookieJar
+            every { cookieJar.setCookie(any(), any(), any(), any(), any()) } just runs
+
+            runBlocking {
+                val result = client.callTool(
+                    "set_cookie", mapOf(
+                        "name" to "session",
+                        "value" to "abc",
+                        "domain" to "example.com"
+                    )
+                )
+                delay(100)
+                assertTrue(result.expectTextContent().contains("Cookie set"))
+            }
+
+            verify(exactly = 1) { cookieJar.setCookie("session", "abc", null, "example.com", null) }
+        }
+
+        @Test
+        fun `set cookie should reject invalid expiration`() {
+            val http = mockk<Http>()
+            val cookieJar = mockk<CookieJar>()
+
+            every { api.http() } returns http
+            every { http.cookieJar() } returns cookieJar
+
+            runBlocking {
+                val result = client.callTool(
+                    "set_cookie", mapOf(
+                        "name" to "session",
+                        "value" to "abc",
+                        "domain" to "example.com",
+                        "expiration" to "not-a-date"
+                    )
+                )
+                delay(100)
+                assertTrue(result.expectTextContent().contains("Invalid expiration"))
+            }
+
+            verify(exactly = 0) { cookieJar.setCookie(any(), any(), any(), any(), any()) }
+        }
+
+        @Test
+        fun `persist value should write to the extension data store`() {
+            val persistence = mockk<Persistence>()
+            val extensionData = mockk<PersistedObject>()
+
+            every { api.persistence() } returns persistence
+            every { persistence.extensionData() } returns extensionData
+            every { extensionData.setString(any(), any()) } just runs
+
+            runBlocking {
+                val result = client.callTool(
+                    "persist_value", mapOf("key" to "token", "value" to "s3cr3t")
+                )
+                delay(100)
+                assertTrue(result.expectTextContent().contains("Stored value"))
+            }
+
+            verify(exactly = 1) { extensionData.setString("token", "s3cr3t") }
+        }
+
+        @Test
+        fun `read persisted value should return stored value`() {
+            val persistence = mockk<Persistence>()
+            val extensionData = mockk<PersistedObject>()
+
+            every { api.persistence() } returns persistence
+            every { persistence.extensionData() } returns extensionData
+            every { extensionData.getString("token") } returns "s3cr3t"
+
+            runBlocking {
+                val result = client.callTool("read_persisted_value", mapOf("key" to "token"))
+                delay(100)
+                result.expectTextContent("s3cr3t")
+            }
+        }
+
+        @Test
+        fun `list persisted keys should return sorted keys`() {
+            val persistence = mockk<Persistence>()
+            val extensionData = mockk<PersistedObject>()
+
+            every { api.persistence() } returns persistence
+            every { persistence.extensionData() } returns extensionData
+            every { extensionData.stringKeys() } returns setOf("beta", "alpha")
+
+            runBlocking {
+                val result = client.callTool("list_persisted_keys", emptyMap())
+                delay(100)
+                result.expectTextContent("alpha\nbeta")
+            }
+        }
+
+        @Test
+        fun `ask burp ai should return prompt response`() {
+            val ai = mockk<burp.api.montoya.ai.Ai>()
+            val prompt = mockk<burp.api.montoya.ai.chat.Prompt>()
+            val response = mockk<burp.api.montoya.ai.chat.PromptResponse>()
+            val message = mockk<burp.api.montoya.ai.chat.Message>()
+
+            mockkStatic(burp.api.montoya.ai.chat.Message::class)
+            every { burp.api.montoya.ai.chat.Message.userMessage(any()) } returns message
+
+            every { api.ai() } returns ai
+            every { ai.isEnabled() } returns true
+            every { ai.prompt() } returns prompt
+            every { prompt.execute(*anyVararg<burp.api.montoya.ai.chat.Message>()) } returns response
+            every { response.content() } returns "AI answer"
+
+            runBlocking {
+                val result = client.callTool("ask_burp_ai", mapOf("prompt" to "hello"))
+                delay(100)
+                result.expectTextContent("AI answer")
+            }
+
+            verify(exactly = 1) { burp.api.montoya.ai.chat.Message.userMessage("hello") }
+        }
+
+        @Test
+        fun `ask burp ai should report when disabled`() {
+            val ai = mockk<burp.api.montoya.ai.Ai>()
+            every { api.ai() } returns ai
+            every { ai.isEnabled() } returns false
+
+            runBlocking {
+                val result = client.callTool("ask_burp_ai", mapOf("prompt" to "hello"))
+                delay(100)
+                assertTrue(result.expectTextContent().contains("not enabled"))
+            }
+        }
+
+        @Test
+        fun `import bambda should report status`() {
+            val bambda = mockk<burp.api.montoya.bambda.Bambda>()
+            val importResult = mockk<burp.api.montoya.bambda.BambdaImportResult>()
+
+            every { api.bambda() } returns bambda
+            every { bambda.importBambda(any()) } returns importResult
+            every { importResult.status() } returns burp.api.montoya.bambda.BambdaImportResult.Status.LOADED_WITHOUT_ERRORS
+            every { importResult.importErrors() } returns emptyList()
+
+            runBlocking {
+                val result = client.callTool("import_bambda", mapOf("script" to "return true;"))
+                delay(100)
+                assertTrue(result.expectTextContent().contains("LOADED_WITHOUT_ERRORS"))
+            }
+        }
+
+        @Test
+        fun `create websocket should open socket and send initial message`() {
+            val webSockets = mockk<burp.api.montoya.websocket.WebSockets>()
+            val creation = mockk<burp.api.montoya.websocket.extension.ExtensionWebSocketCreation>()
+            val socket = mockk<burp.api.montoya.websocket.extension.ExtensionWebSocket>(relaxed = true)
+
+            every { api.websockets() } returns webSockets
+            every { webSockets.createWebSocket(any(), any<String>()) } returns creation
+            every { creation.webSocket() } returns Optional.of(socket)
+            every { socket.registerMessageHandler(any()) } returns mockk()
+
+            runBlocking {
+                val result = client.callTool(
+                    "create_websocket", mapOf(
+                        "targetHostname" to "example.com",
+                        "targetPort" to 443,
+                        "usesHttps" to true,
+                        "path" to "/ws",
+                        "textMessage" to "hello"
+                    )
+                )
+                delay(100)
+                assertTrue(result.expectTextContent().contains("Opened WebSocket"))
+            }
+
+            verify(exactly = 1) { socket.sendTextMessage("hello") }
+        }
+
+        @Test
+        fun `create websocket should report failure`() {
+            val webSockets = mockk<burp.api.montoya.websocket.WebSockets>()
+            val creation = mockk<burp.api.montoya.websocket.extension.ExtensionWebSocketCreation>()
+
+            every { api.websockets() } returns webSockets
+            every { webSockets.createWebSocket(any(), any<String>()) } returns creation
+            every { creation.webSocket() } returns Optional.empty()
+            every { creation.status() } returns burp.api.montoya.websocket.extension.ExtensionWebSocketCreationStatus.CONNECTION_FAILED
+
+            runBlocking {
+                val result = client.callTool(
+                    "create_websocket", mapOf(
+                        "targetHostname" to "example.com",
+                        "targetPort" to 443,
+                        "usesHttps" to true,
+                        "path" to "/ws"
+                    )
+                )
+                delay(100)
+                assertTrue(result.expectTextContent().contains("CONNECTION_FAILED"))
+            }
+        }
+
+        @Test
+        fun `send websocket message should report unknown socket`() {
+            runBlocking {
+                val result = client.callTool(
+                    "send_websocket_message", mapOf("socketId" to "ws-999", "message" to "hi")
+                )
+                delay(100)
+                assertTrue(result.expectTextContent().contains("No such WebSocket"))
+            }
+        }
+    }
+
     inner class ScannerControlToolsTests {
         @BeforeEach
         fun setupProfessionalEdition() {

@@ -137,6 +137,32 @@ Task IDs only live for the current session; a restart forgets them.
 3. `get_collaborator_interactions` with that `payloadId` lists DNS, HTTP and SMTP hits. Poll again after a
    short wait. `No interactions detected` is not proof of absence.
 
+### WebSockets (Professional only)
+
+1. `create_websocket` (`targetHostname`, `targetPort`, `usesHttps`, `path`, optional initial `textMessage`)
+   opens a socket and returns a socket ID. Requires approval and an in-scope target.
+2. `send_websocket_message` (`socketId`, `message`) sends text on it. Requires approval.
+3. `read_websocket_messages` (`socketId`) returns what the server has sent so far.
+4. `close_websocket` (`socketId`) closes it. Requires approval.
+
+Socket IDs only live for the current session. Prefer `get_proxy_websocket_history` when you only need to read
+traffic Burp already captured.
+
+### Cookie Jar
+
+| Tool | Use |
+|---|---|
+| `get_cookies` | List cookies Burp will send, with domain, path and expiry. |
+| `set_cookie` | Add a cookie (`name`, `value`, `domain`, optional `path`, `expiration`). Requires approval. |
+
+### AI, Bambdas and storage
+
+| Tool | Use |
+|---|---|
+| `ask_burp_ai` | Prompt Burp's built-in AI (`prompt`, optional `systemMessage`, `temperature`). Professional with AI enabled only. |
+| `import_bambda` | Import a Bambda `script` into Burp. Requires approval. Returns the import status and errors. |
+| `persist_value` / `read_persisted_value` / `delete_persisted_value` / `list_persisted_keys` | Read and write the extension's own persistent key-value store. |
+
 ### Utilities
 
 `url_encode` (optional `encoding`: `JAVA_DEFAULT`, `KEY_CHARACTERS`, `ALL_CHARACTERS`,
