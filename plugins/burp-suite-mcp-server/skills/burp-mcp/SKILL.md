@@ -119,6 +119,7 @@ the user wants to carry on by hand, and give the tab a name that says what it is
 | `start_crawl` | Crawl one or more seed `urls`. Returns a task ID. Requires approval. |
 | `get_scan_task_status` | Report `statusMessage`, request/error counts and issues for a task ID. |
 | `delete_scan_task` | Remove a task the server started. Requires approval. |
+| `generate_report` | Write an `HTML` or `XML` Scanner report of site map issues to `outputPath` (optional `urlPrefix`). |
 
 Task IDs only live for the current session; a restart forgets them.
 
@@ -138,15 +139,20 @@ Task IDs only live for the current session; a restart forgets them.
 
 ### Utilities
 
-`url_encode`, `url_decode`, `base64_encode`, `base64_decode`, `html_encode`, `html_decode`, `ascii_to_hex`,
-`hex_to_ascii`, `generate_hash` (`content`, `algorithm` such as `SHA_256`), `generate_random_string`
-(`length`, `characterSet`) and `read_json_path` (`json`, `path`). Use them when you need Burp's exact
-encoding; otherwise encoding locally is fine.
+`url_encode` (optional `encoding`: `JAVA_DEFAULT`, `KEY_CHARACTERS`, `ALL_CHARACTERS`,
+`ALL_CHARACTERS_UNICODE`), `url_decode`, `base64_encode`/`base64_decode` (optional `options` list:
+`URL`, `NO_PADDING`), `html_encode` (optional `encoding`: `STANDARD`, `ALL_CHARACTERS`,
+`ALL_CHARACTERS_DECIMAL`, `ALL_CHARACTERS_HEX`), `html_decode`, `ascii_to_hex`, `hex_to_ascii`,
+`convert_number` (`value`, `from`, `to` in `binary`/`octal`/`decimal`/`hex`), `compress`/`decompress`
+(`content`, `algorithm` in `GZIP`/`DEFLATE`; compressed data is Base64), `generate_hash` (`content`,
+`algorithm` such as `SHA_256`), `generate_random_string` (`length`, `characterSet`) and `read_json_path`
+(`json`, `path`). Use them when you need Burp's exact encoding; otherwise encoding locally is fine.
 
 ### Burp state and configuration
 
 | Tool | Notes |
 |---|---|
+| `get_burp_state` | Burp version, edition, build, project and current intercept/task-engine state. |
 | `set_proxy_intercept_state` | `intercepting: true/false`. Interception holds the user's browser traffic, so only change it when asked. |
 | `set_task_execution_engine_state` | `running: true/false`. Pauses or resumes scans and other tasks. |
 | `output_project_options` / `output_user_options` | Export config as JSON. Credentials are redacted by default. |

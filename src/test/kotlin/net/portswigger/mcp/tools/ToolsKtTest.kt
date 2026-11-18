@@ -14,6 +14,7 @@ import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
 import burp.api.montoya.proxy.Proxy
 import burp.api.montoya.proxy.ProxyHttpRequestResponse
+import burp.api.montoya.scanner.audit.issues.AuditIssue
 import burp.api.montoya.utilities.Base64Utils
 import burp.api.montoya.utilities.RandomUtils
 import burp.api.montoya.utilities.URLUtils
@@ -477,26 +478,230 @@ class ToolsKtTest {
         @Test
         fun `base64 decode should work properly`() {
             val base64Utils = mockk<Base64Utils>()
+            val byteUtils = mockk<burp.api.montoya.utilities.ByteUtils>()
             val utilities = mockk<Utilities>()
             val burpByteArray = mockk<ByteArray>()
-            
+            val rawBytes = "test string".toByteArray()
+
             every { api.utilities() } returns utilities
             every { utilities.base64Utils() } returns base64Utils
+            every { utilities.byteUtils() } returns byteUtils
             every { base64Utils.decode(any<String>()) } returns burpByteArray
-            every { burpByteArray.toString() } returns "test string"
-            
+            every { burpByteArray.getBytes() } returns rawBytes
+            every { byteUtils.convertToString(rawBytes) } returns "test string"
+
             runBlocking {
                 val result = client.callTool(
                     "base64_decode", mapOf(
                         "content" to "dGVzdCBzdHJpbmc="
                     )
                 )
-                
+
                 delay(100)
                 result.expectTextContent("test string")
             }
-            
+
             verify(exactly = 1) { base64Utils.decode(any<String>()) }
+            verify(exactly = 1) { byteUtils.convertToString(rawBytes) }
+        }
+
+        @Test
+        fun `base64 decode should honour decoding options`() {
+            val base64Utils = mockk<Base64Utils>()
+            val byteUtils = mockk<burp.api.montoya.utilities.ByteUtils>()
+            val utilities = mockk<Utilities>()
+            val burpByteArray = mockk<ByteArray>()
+            val rawBytes = "test string".toByteArray()
+
+            every { api.utilities() } returns utilities
+            every { utilities.base64Utils() } returns base64Utils
+            every { utilities.byteUtils() } returns byteUtils
+            every { base64Utils.decode(any<String>(), any()) } returns burpByteArray
+            every { burpByteArray.getBytes() } returns rawBytes
+            every { byteUtils.convertToString(rawBytes) } returns "test string"
+
+            runBlocking {
+                val result = client.callTool(
+                    "base64_decode", mapOf(
+                        "content" to "dGVzdCBzdHJpbmc",
+                        "options" to listOf("URL")
+                    )
+                )
+
+                delay(100)
+                result.expectTextContent("test string")
+            }
+
+            verify(exactly = 1) { base64Utils.decode(any<String>(), burp.api.montoya.utilities.Base64DecodingOptions.URL) }
+        }
+
+        @Test
+        fun `base64 decode should reject unknown options`() {
+            val base64Utils = mockk<Base64Utils>()
+            val utilities = mockk<Utilities>()
+
+            every { api.utilities() } returns utilities
+            every { utilities.base64Utils() } returns base64Utils
+
+            runBlocking {
+                val result = client.callTool(
+                    "base64_decode", mapOf(
+                        "content" to "dGVzdA==",
+                        "options" to listOf("NOT_A_OPTION")
+                    )
+                )
+
+                delay(100)
+                assertTrue(result.expectTextContent().contains("Unknown option"))
+            }
+
+            verify(exactly = 0) { base64Utils.decode(any<String>()) }
+        }
+
+        @Test
+        fun `url encode should honour encoding variant`() {
+            val urlUtils = mockk<URLUtils>()
+            val utilities = mockk<Utilities>()
+
+            every { api.utilities() } returns utilities
+            every { utilities.urlUtils() } returns urlUtils
+            every { urlUtils.encode(any<String>(), any()) } returns "a%20b"
+
+            runBlocking {
+                val result = client.callTool(
+                    "url_encode", mapOf(
+                        "content" to "a b",
+                        "encoding" to "ALL_CHARACTERS"
+                    )
+                )
+
+                delay(100)
+                result.expectTextContent("a%20b")
+            }
+
+            verify(exactly = 1) { urlUtils.encode(any<String>(), burp.api.montoya.utilities.URLEncoding.ALL_CHARACTERS) }
+        }
+
+        @Test
+        fun `url encode should reject unknown encoding variant`() {
+            val urlUtils = mockk<URLUtils>()
+            val utilities = mockk<Utilities>()
+
+            every { api.utilities() } returns utilities
+            every { utilities.urlUtils() } returns urlUtils
+
+            runBlocking {
+                val result = client.callTool(
+                    "url_encode", mapOf(
+                        "content" to "a b",
+                        "encoding" to "NOPE"
+                    )
+                )
+
+                delay(100)
+                assertTrue(result.expectTextContent().contains("Unknown encoding"))
+            }
+
+            verify(exactly = 0) { urlUtils.encode(any<String>(), any()) }
+        }
+
+        @Test
+        fun `convert number should use the right conversion`() {
+            val numberUtils = mockk<burp.api.montoya.utilities.NumberUtils>()
+            val utilities = mockk<Utilities>()
+
+            every { api.utilities() } returns utilities
+            every { utilities.numberUtils() } returns numberUtils
+            every { numberUtils.convertDecimalToHex("255") } returns "ff"
+
+            runBlocking {
+                val result = client.callTool(
+                    "convert_number", mapOf(
+                        "value" to "255",
+                        "from" to "decimal",
+                        "to" to "hex"
+                    )
+                )
+
+                delay(100)
+                result.expectTextContent("ff")
+            }
+
+            verify(exactly = 1) { numberUtils.convertDecimalToHex("255") }
+        }
+
+        @Test
+        fun `convert number should reject unknown base`() {
+            runBlocking {
+                val result = client.callTool(
+                    "convert_number", mapOf(
+                        "value" to "255",
+                        "from" to "decimal",
+                        "to" to "base64"
+                    )
+                )
+
+                delay(100)
+                assertTrue(result.expectTextContent().contains("Unknown target base"))
+            }
+        }
+
+        @Test
+        fun `compress should base64 encode the compressed bytes`() {
+            val compressionUtils = mockk<burp.api.montoya.utilities.CompressionUtils>()
+            val base64Utils = mockk<Base64Utils>()
+            val utilities = mockk<Utilities>()
+            val compressed = mockk<ByteArray>()
+
+            every { api.utilities() } returns utilities
+            every { utilities.compressionUtils() } returns compressionUtils
+            every { utilities.base64Utils() } returns base64Utils
+            every { compressionUtils.compress(any(), burp.api.montoya.utilities.CompressionType.GZIP) } returns compressed
+            every { base64Utils.encodeToString(compressed) } returns "H4sIAAAA"
+
+            runBlocking {
+                val result = client.callTool(
+                    "compress", mapOf(
+                        "content" to "hello",
+                        "algorithm" to "gzip"
+                    )
+                )
+
+                delay(100)
+                result.expectTextContent("H4sIAAAA")
+            }
+        }
+
+        @Test
+        fun `decompress should decode base64 then decompress`() {
+            val compressionUtils = mockk<burp.api.montoya.utilities.CompressionUtils>()
+            val base64Utils = mockk<Base64Utils>()
+            val byteUtils = mockk<burp.api.montoya.utilities.ByteUtils>()
+            val utilities = mockk<Utilities>()
+            val compressed = mockk<ByteArray>()
+            val decompressed = mockk<ByteArray>()
+            val rawBytes = "hello".toByteArray()
+
+            every { api.utilities() } returns utilities
+            every { utilities.compressionUtils() } returns compressionUtils
+            every { utilities.base64Utils() } returns base64Utils
+            every { utilities.byteUtils() } returns byteUtils
+            every { base64Utils.decode("H4sIAAAA") } returns compressed
+            every { compressionUtils.decompress(compressed, burp.api.montoya.utilities.CompressionType.GZIP) } returns decompressed
+            every { decompressed.getBytes() } returns rawBytes
+            every { byteUtils.convertToString(rawBytes) } returns "hello"
+
+            runBlocking {
+                val result = client.callTool(
+                    "decompress", mapOf(
+                        "content" to "H4sIAAAA",
+                        "algorithm" to "GZIP"
+                    )
+                )
+
+                delay(100)
+                result.expectTextContent("hello")
+            }
         }
         
         @Test
@@ -1368,6 +1573,94 @@ class ToolsKtTest {
                 val result = client.callTool("get_scan_task_status", mapOf("taskId" to "scan-999"))
                 delay(100)
                 assertTrue(result.expectTextContent().contains("No such scan task"))
+            }
+        }
+
+        @Test
+        fun `generate report should write issues to disk`() {
+            val scanner = mockk<burp.api.montoya.scanner.Scanner>()
+            val issue = mockk<AuditIssue>()
+
+            every { api.scanner() } returns scanner
+            every { scanner.generateReport(any(), any(), any()) } just runs
+            every { api.siteMap() } returns mockk {
+                every { issues() } returns listOf(issue)
+            }
+            every { issue.baseUrl() } returns "https://example.com/"
+
+            runBlocking {
+                val result = client.callTool(
+                    "generate_report", mapOf(
+                        "outputPath" to "/tmp/report.html",
+                        "format" to "HTML"
+                    )
+                )
+                delay(100)
+                assertTrue(result.expectTextContent().contains("Wrote 1 issue"))
+            }
+
+            verify(exactly = 1) { scanner.generateReport(any(), any(), any()) }
+        }
+
+        @Test
+        fun `generate report should report when there are no issues`() {
+            every { api.siteMap() } returns mockk {
+                every { issues() } returns emptyList()
+            }
+
+            runBlocking {
+                val result = client.callTool(
+                    "generate_report", mapOf(
+                        "outputPath" to "/tmp/report.html"
+                    )
+                )
+                delay(100)
+                assertTrue(result.expectTextContent().contains("No scanner issues"))
+            }
+        }
+
+        @Test
+        fun `generate report should reject unknown format`() {
+            every { api.siteMap() } returns mockk {
+                every { issues() } returns emptyList()
+            }
+
+            runBlocking {
+                val result = client.callTool(
+                    "generate_report", mapOf(
+                        "outputPath" to "/tmp/report.pdf",
+                        "format" to "PDF"
+                    )
+                )
+                delay(100)
+                assertTrue(result.expectTextContent().contains("Unknown format"))
+            }
+        }
+
+        @Test
+        fun `get burp state should report environment details`() {
+            val version = mockk<burp.api.montoya.core.Version>()
+            val project = mockk<burp.api.montoya.project.Project>()
+            val proxy = mockk<burp.api.montoya.proxy.Proxy>()
+
+            every { api.burpSuite().version() } returns version
+            every { version.name() } returns "Burp Suite Professional"
+            every { version.toString() } returns "2025.10.1"
+            every { version.edition() } returns BurpSuiteEdition.PROFESSIONAL
+            every { version.buildNumber() } returns 12345L
+            every { api.project() } returns project
+            every { project.name() } returns "Test Project"
+            every { project.id() } returns "abc123"
+            every { api.proxy() } returns proxy
+            every { proxy.isInterceptEnabled() } returns false
+
+            runBlocking {
+                val result = client.callTool("get_burp_state", emptyMap())
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.contains("Burp Suite Professional"), "unexpected: $text")
+                assertTrue(text.contains("Test Project"), "unexpected: $text")
+                assertTrue(text.contains("Proxy intercept: disabled"), "unexpected: $text")
             }
         }
     }

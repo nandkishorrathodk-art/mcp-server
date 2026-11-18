@@ -99,11 +99,15 @@ The server exposes the following tools. Community Edition exposes a subset; Scan
 | `get_scanner_issues` | Lists Scanner issues (Pro). |
 | `start_audit` / `start_crawl` | Starts Scanner tasks (Pro, requires approval). |
 | `get_scan_task_status` / `delete_scan_task` | Manages Scanner tasks started by the server (Pro). |
+| `generate_report` | Generates an HTML/XML Scanner report for site map issues (Pro). |
 | `generate_collaborator_payload` / `get_collaborator_interactions` | Burp Collaborator OOB testing (Pro). |
 | `set_task_execution_engine_state` / `set_proxy_intercept_state` | Controls the task engine and proxy intercept (requires approval). |
-| `url_encode` / `url_decode` / `base64_encode` / `base64_decode` | Encoding utilities. |
-| `html_encode` / `html_decode` | HTML encoding utilities. |
+| `get_burp_state` | Reports Burp version, edition, project and tool state. |
+| `url_encode` / `url_decode` / `base64_encode` / `base64_decode` | Encoding utilities (optional encoding/option variants). |
+| `html_encode` / `html_decode` | HTML encoding utilities (optional encoding variants). |
 | `ascii_to_hex` / `hex_to_ascii` | Hex conversion utilities. |
+| `convert_number` | Converts a number between binary, octal, decimal and hex. |
+| `compress` / `decompress` | GZIP/DEFLATE compression utilities (Base64 transport). |
 | `generate_hash` | Generates a hash (MD5, SHA-1, SHA-256, SHA-512) and returns lowercase hex. |
 | `generate_random_string` | Generates a random string. |
 | `read_json_path` | Reads a value from JSON using Burp's JSON path syntax. |

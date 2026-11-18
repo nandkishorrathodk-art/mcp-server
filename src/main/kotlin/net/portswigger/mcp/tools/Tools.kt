@@ -9,9 +9,16 @@ import burp.api.montoya.core.ByteArray
 import burp.api.montoya.scanner.AuditConfiguration
 import burp.api.montoya.scanner.BuiltInAuditConfiguration
 import burp.api.montoya.scanner.CrawlConfiguration
+import burp.api.montoya.scanner.ReportFormat
 import burp.api.montoya.scanner.ScanTask
 import burp.api.montoya.scanner.audit.Audit
+import burp.api.montoya.scanner.audit.issues.AuditIssue
+import burp.api.montoya.utilities.Base64DecodingOptions
+import burp.api.montoya.utilities.Base64EncodingOptions
+import burp.api.montoya.utilities.CompressionType
 import burp.api.montoya.utilities.DigestAlgorithm
+import burp.api.montoya.utilities.HtmlEncoding
+import burp.api.montoya.utilities.URLEncoding
 import burp.api.montoya.http.Http
 import burp.api.montoya.http.HttpMode
 import burp.api.montoya.http.HttpService
@@ -59,6 +66,36 @@ internal fun String.toHttpMode(): HttpMode = when (uppercase()) {
     "HTTP_2" -> HttpMode.HTTP_2
     "HTTP_2_IGNORE_ALPN" -> HttpMode.HTTP_2_IGNORE_ALPN
     else -> throw IllegalArgumentException("Unknown httpMode '$this'. Expected one of AUTO, HTTP_1, HTTP_2, HTTP_2_IGNORE_ALPN")
+}
+
+private fun parseRadix(name: String): Int? = when (name.lowercase()) {
+    "binary", "bin", "2" -> 2
+    "octal", "oct", "8" -> 8
+    "decimal", "dec", "10" -> 10
+    "hex", "hexadecimal", "16" -> 16
+    else -> null
+}
+
+private fun parseBase64EncodingOptions(options: List<String>?): List<Base64EncodingOptions>? {
+    if (options.isNullOrEmpty()) return emptyList()
+    return options.map { name ->
+        try {
+            Base64EncodingOptions.valueOf(name.uppercase())
+        } catch (_: IllegalArgumentException) {
+            return null
+        }
+    }
+}
+
+private fun parseBase64DecodingOptions(options: List<String>?): List<Base64DecodingOptions>? {
+    if (options.isNullOrEmpty()) return emptyList()
+    return options.map { name ->
+        try {
+            Base64DecodingOptions.valueOf(name.uppercase())
+        } catch (_: IllegalArgumentException) {
+            return null
+        }
+    }
 }
 
 /**
@@ -280,24 +317,83 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
         api.intruder().sendToIntruder(request, tabName)
     }
 
-    mcpTool<UrlEncode>("URL encodes the input string") {
-        api.utilities().urlUtils().encode(content)
+    mcpTool<UrlEncode>("URL encodes the input string. Optional 'encoding' selects Burp's URL encoding variant (JAVA_DEFAULT, KEY_CHARACTERS, ALL_CHARACTERS, ALL_CHARACTERS_UNICODE).") {
+        if (encoding == null) {
+            api.utilities().urlUtils().encode(content)
+        } else {
+            val mode = try {
+                URLEncoding.valueOf(encoding.uppercase())
+            } catch (_: IllegalArgumentException) {
+                return@mcpTool "Unknown encoding '$encoding'. Expected one of JAVA_DEFAULT, KEY_CHARACTERS, ALL_CHARACTERS, ALL_CHARACTERS_UNICODE."
+            }
+            api.utilities().urlUtils().encode(content, mode)
+        }
     }
 
     mcpTool<UrlDecode>("URL decodes the input string") {
         api.utilities().urlUtils().decode(content)
     }
 
-    mcpTool<Base64Encode>("Base64 encodes the input string") {
-        api.utilities().base64Utils().encodeToString(content)
+    mcpTool<Base64Encode>("Base64 encodes the input string. Optional 'options' controls URL-safe and padding variants (URL, NO_PADDING).") {
+        val options = parseBase64EncodingOptions(options)
+            ?: return@mcpTool "Unknown option(s) ${options}. Expected URL and/or NO_PADDING."
+        api.utilities().base64Utils().encodeToString(content, *options.toTypedArray())
     }
 
-    mcpTool<Base64Decode>("Base64 decodes the input string") {
-        api.utilities().base64Utils().decode(content).toString()
+    mcpTool<Base64Decode>("Base64 decodes the input string. Optional 'options' selects the decoding variant (URL).") {
+        val options = parseBase64DecodingOptions(options)
+            ?: return@mcpTool "Unknown option(s) ${options}. Expected URL."
+        val decoded = api.utilities().base64Utils().decode(content, *options.toTypedArray())
+        api.utilities().byteUtils().convertToString(decoded.getBytes())
     }
 
     mcpTool<GenerateRandomString>("Generates a random string of specified length and character set") {
         api.utilities().randomUtils().randomString(length, characterSet)
+    }
+
+    mcpTool<ConvertNumber>("Converts a number between bases (binary, octal, decimal, hex). 'from' is the source base and 'to' is the target base.") {
+        val fromBase = parseRadix(from)
+            ?: return@mcpTool "Unknown source base '$from'. Expected binary, octal, decimal or hex."
+        val toBase = parseRadix(to)
+            ?: return@mcpTool "Unknown target base '$to'. Expected binary, octal, decimal or hex."
+        if (fromBase == toBase) return@mcpTool value
+        val numberUtils = api.utilities().numberUtils()
+        when (fromBase to toBase) {
+            2 to 8 -> numberUtils.convertBinaryToOctal(value)
+            2 to 10 -> numberUtils.convertBinaryToDecimal(value)
+            2 to 16 -> numberUtils.convertBinaryToHex(value)
+            8 to 2 -> numberUtils.convertOctalToBinary(value)
+            8 to 10 -> numberUtils.convertOctalToDecimal(value)
+            8 to 16 -> numberUtils.convertOctalToHex(value)
+            10 to 2 -> numberUtils.convertDecimalToBinary(value)
+            10 to 8 -> numberUtils.convertDecimalToOctal(value)
+            10 to 16 -> numberUtils.convertDecimalToHex(value)
+            16 to 2 -> numberUtils.convertHexToBinary(value)
+            16 to 8 -> numberUtils.convertHexToOctal(value)
+            16 to 10 -> numberUtils.convertHexToDecimal(value)
+            else -> error("unreachable")
+        }
+    }
+
+    mcpTool<Compress>("Compresses the input using the specified algorithm (GZIP or DEFLATE) and returns the result as Base64.") {
+        val type = try {
+            CompressionType.valueOf(algorithm.uppercase())
+        } catch (_: IllegalArgumentException) {
+            return@mcpTool "Unknown compression algorithm '$algorithm'. Expected GZIP or DEFLATE."
+        }
+        val compressed = api.utilities().compressionUtils().compress(ByteArray.byteArray(content), type)
+        api.utilities().base64Utils().encodeToString(compressed)
+    }
+
+    mcpTool<Decompress>("Decompresses Base64-encoded input using the specified algorithm (GZIP or DEFLATE) and returns the plain text.") {
+        val type = try {
+            CompressionType.valueOf(algorithm.uppercase())
+        } catch (_: IllegalArgumentException) {
+            return@mcpTool "Unknown compression algorithm '$algorithm'. Expected GZIP or DEFLATE."
+        }
+        val compressed = api.utilities().base64Utils().decode(content)
+        val decompressed = api.utilities().compressionUtils().decompress(compressed, type)
+        api.utilities().byteUtils().convertToString(decompressed.getBytes())
     }
 
     mcpTool(
@@ -486,6 +582,20 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
         "Intercept has been ${if (intercepting) "enabled" else "disabled"}"
     }
 
+    mcpTool("get_burp_state", "Reports Burp Suite environment and current tool state: version, edition, project, proxy intercept and task execution engine state.") {
+        val version = api.burpSuite().version()
+        val project = api.project()
+        buildString {
+            appendLine("Burp Suite: ${version.name()}")
+            appendLine("Version: ${version.toString()}")
+            appendLine("Edition: ${version.edition().displayName()}")
+            appendLine("Build number: ${version.buildNumber()}")
+            appendLine("Project: ${project.name()} (${project.id()})")
+            appendLine("Proxy intercept: ${if (api.proxy().isInterceptEnabled()) "enabled" else "disabled"}")
+            appendLine("Task execution engine: ${api.burpSuite().taskExecutionEngine().state.name.lowercase()}")
+        }
+    }
+
     mcpTool("get_active_editor_contents", "Outputs the contents of the user's active message editor") {
         getActiveEditor(api)?.text ?: "<No active editor>"
     }
@@ -578,6 +688,28 @@ private fun Server.registerScannerControlTools(api: MontoyaApi, config: McpConfi
         scanTasks.remove(taskId)
         "Deleted scan task $taskId"
     }
+
+    mcpTool<GenerateReport>(
+        "Generates a Burp Scanner report for issues from the site map (Professional only). " +
+        "Writes HTML or XML to the given file path. Optionally restrict to issues matching a URL prefix."
+    ) {
+        val format = try {
+            ReportFormat.valueOf(this.format.uppercase())
+        } catch (_: IllegalArgumentException) {
+            return@mcpTool "Unknown format '${this.format}'. Expected HTML or XML."
+        }
+
+        val allIssues = api.siteMap().issues()
+        val issues = urlPrefix?.let { prefix ->
+            allIssues.filter { it.baseUrl().startsWith(prefix) }
+        } ?: allIssues
+
+        if (issues.isEmpty()) return@mcpTool "No scanner issues found to report"
+
+        val path = java.nio.file.Path.of(outputPath)
+        api.scanner().generateReport(issues, format, path)
+        "Wrote ${issues.size} issue(s) to $outputPath"
+    }
 }
 
 private fun Server.registerScopeTools(api: MontoyaApi, config: McpConfig) {
@@ -655,8 +787,17 @@ private fun Server.registerHandoffTools(api: MontoyaApi, config: McpConfig) {
 }
 
 private fun Server.registerExtraUtilityTools(api: MontoyaApi, config: McpConfig) {
-    mcpTool<HtmlEncode>("HTML-encodes the input string") {
-        api.utilities().htmlUtils().encode(content)
+    mcpTool<HtmlEncode>("HTML-encodes the input string. Optional 'encoding' selects the encoding variant (STANDARD, ALL_CHARACTERS, ALL_CHARACTERS_DECIMAL, ALL_CHARACTERS_HEX).") {
+        if (encoding == null) {
+            api.utilities().htmlUtils().encode(content)
+        } else {
+            val mode = try {
+                HtmlEncoding.valueOf(encoding.uppercase())
+            } catch (_: IllegalArgumentException) {
+                return@mcpTool "Unknown encoding '$encoding'. Expected STANDARD, ALL_CHARACTERS, ALL_CHARACTERS_DECIMAL or ALL_CHARACTERS_HEX."
+            }
+            api.utilities().htmlUtils().encode(content, mode)
+        }
     }
 
     mcpTool<HtmlDecode>("HTML-decodes the input string") {
@@ -764,16 +905,28 @@ data class SendToIntruder(
 ) : HttpServiceParams
 
 @Serializable
-data class UrlEncode(val content: String)
+data class UrlEncode(val content: String, val encoding: String? = null)
 
 @Serializable
 data class UrlDecode(val content: String)
 
 @Serializable
-data class Base64Encode(val content: String)
+data class Base64Encode(val content: String, val options: List<String>? = null)
 
 @Serializable
-data class Base64Decode(val content: String)
+data class Base64Decode(val content: String, val options: List<String>? = null)
+
+@Serializable
+data class ConvertNumber(val value: String, val from: String, val to: String)
+
+@Serializable
+data class Compress(val content: String, val algorithm: String)
+
+@Serializable
+data class Decompress(val content: String, val algorithm: String)
+
+@Serializable
+data class GenerateReport(val outputPath: String, val format: String = "HTML", val urlPrefix: String? = null)
 
 @Serializable
 data class GenerateRandomString(val length: Int, val characterSet: String)
@@ -865,7 +1018,7 @@ data class SendToOrganizer(
 ) : HttpServiceParams
 
 @Serializable
-data class HtmlEncode(val content: String)
+data class HtmlEncode(val content: String, val encoding: String? = null)
 
 @Serializable
 data class HtmlDecode(val content: String)
