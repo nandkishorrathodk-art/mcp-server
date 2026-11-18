@@ -59,13 +59,17 @@ object ActionApprovalSecurity {
 /**
  * Enforces the optional "only send requests to in-scope targets" setting. Returns true when
  * the request may proceed. A disabled setting always allows.
+ *
+ * [url] is evaluated lazily so callers that would have to build the URL from a request (or
+ * from pseudo-headers) do not pay for it when the setting is off.
  */
-fun isUrlInScope(url: String, config: McpConfig, api: MontoyaApi): Boolean {
+fun isUrlInScope(url: () -> String, config: McpConfig, api: MontoyaApi): Boolean {
     if (!config.enforceScope) return true
     return try {
-        api.scope().isInScope(url)
+        api.scope().isInScope(url())
     } catch (e: Exception) {
-        api.logging().logToError("Scope check failed for $url: ${e.message}")
+        // Fail closed: a URL we cannot resolve or a scope lookup that errors must not silently allow.
+        api.logging().logToError("Scope check failed: ${e.message}")
         false
     }
 }

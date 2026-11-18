@@ -1295,7 +1295,7 @@ class ToolsKtTest {
             mockkStatic(ByteArray::class)
             every { ByteArray.byteArray(any<String>()) } returns byteArray
             every { cryptoUtils.generateDigest(byteArray, any()) } returns digest
-            every { digest.toString() } returns "deadbeef"
+            every { digest.getBytes() } returns byteArrayOf(0xde.toByte(), 0xad.toByte(), 0xbe.toByte(), 0xef.toByte())
 
             runBlocking {
                 val result = client.callTool(

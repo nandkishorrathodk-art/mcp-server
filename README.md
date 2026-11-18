@@ -104,7 +104,7 @@ The server exposes the following tools. Community Edition exposes a subset; Scan
 | `url_encode` / `url_decode` / `base64_encode` / `base64_decode` | Encoding utilities. |
 | `html_encode` / `html_decode` | HTML encoding utilities. |
 | `ascii_to_hex` / `hex_to_ascii` | Hex conversion utilities. |
-| `generate_hash` | Generates a hash (MD5, SHA-1, SHA-256, SHA-512). |
+| `generate_hash` | Generates a hash (MD5, SHA-1, SHA-256, SHA-512) and returns lowercase hex. |
 | `generate_random_string` | Generates a random string. |
 | `read_json_path` | Reads a value from JSON using Burp's JSON path syntax. |
 | `get_active_editor_contents` / `set_active_editor_contents` | Reads and writes the active message editor. |

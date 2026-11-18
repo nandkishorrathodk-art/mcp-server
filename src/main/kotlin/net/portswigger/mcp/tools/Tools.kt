@@ -20,6 +20,7 @@ import burp.api.montoya.http.RequestOptions
 import burp.api.montoya.http.message.HttpHeader
 import burp.api.montoya.http.message.HttpRequestResponse
 import burp.api.montoya.http.message.requests.HttpRequest
+import burp.api.montoya.http.message.responses.HttpResponse
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -105,6 +106,17 @@ private fun formatResponse(response: HttpRequestResponse?, maxResponseLength: In
     return if (maxResponseLength > 0) limitText(text, maxResponseLength) else text
 }
 
+/**
+ * Builds the URL the request will actually be sent to for scope checks. Uses the client-supplied
+ * service (host, port, scheme) rather than the request's Host header, so the checked authority
+ * always matches the connection target, and appends the real path so path-scoped rules apply.
+ */
+private fun requestScopeUrl(usesHttps: Boolean, targetHostname: String, targetPort: Int, path: String): String {
+    val scheme = if (usesHttps) "https" else "http"
+    val normalizedPath = if (path.startsWith("/")) path else "/$path"
+    return "$scheme://$targetHostname:$targetPort$normalizedPath"
+}
+
 private fun buildHttp2HeaderList(
     pseudoHeaders: Map<String, String>, headers: Map<String, String>
 ): List<HttpHeader> {
@@ -186,17 +198,16 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
             return@mcpTool "Send HTTP request denied by Burp Suite"
         }
 
-        val scopeUrl = "http${if (usesHttps) "s" else ""}://$targetHostname:$targetPort/"
-        if (!isUrlInScope(scopeUrl, config, api)) {
+        val fixedContent = normalizeHttpContent(content)
+        val request = HttpRequest.httpRequest(toMontoyaService(), fixedContent)
+
+        if (!isUrlInScope({ requestScopeUrl(usesHttps, targetHostname, targetPort, request.path()) }, config, api)) {
             api.logging().logToOutput("MCP HTTP request out of scope: $targetHostname:$targetPort")
             return@mcpTool "Send HTTP request denied: target is out of scope"
         }
 
         api.logging().logToOutput("MCP HTTP/1.1 request: $targetHostname:$targetPort")
 
-        val fixedContent = normalizeHttpContent(content)
-
-        val request = HttpRequest.httpRequest(toMontoyaService(), fixedContent)
         currentCoroutineContext().ensureActive()
         val response = api.http().sendWithOptions(
             request,
@@ -229,17 +240,17 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
             return@mcpTool "Send HTTP request denied by Burp Suite"
         }
 
-        val scopeUrl = "http${if (usesHttps) "s" else ""}://$targetHostname:$targetPort/"
-        if (!isUrlInScope(scopeUrl, config, api)) {
-            api.logging().logToOutput("MCP HTTP request out of scope: $targetHostname:$targetPort")
+        val headerList = buildHttp2HeaderList(pseudoHeaders, headers)
+        val request = HttpRequest.http2Request(toMontoyaService(), headerList, requestBody)
+
+        val path = pseudoHeaders[":path"] ?: pseudoHeaders["path"] ?: request.path()
+        if (!isUrlInScope({ requestScopeUrl(usesHttps, targetHostname, targetPort, path) }, config, api)) {
+            api.logging().logToOutput("MCP HTTP/2 request out of scope: $targetHostname:$targetPort")
             return@mcpTool "Send HTTP request denied: target is out of scope"
         }
 
         api.logging().logToOutput("MCP HTTP/2 request: $targetHostname:$targetPort")
 
-        val headerList = buildHttp2HeaderList(pseudoHeaders, headers)
-
-        val request = HttpRequest.http2Request(toMontoyaService(), headerList, requestBody)
         currentCoroutineContext().ensureActive()
         val response = api.http().sendWithOptions(
             request,
@@ -514,7 +525,7 @@ private fun Server.registerScannerControlTools(api: MontoyaApi, config: McpConfi
         val allowed = ActionApprovalSecurity.checkActionPermission(ActionType.SCANNER, "start audit of ${urls.size} URL(s)", config)
         if (!allowed) return@mcpTool "Start audit denied by Burp Suite"
 
-        val outOfScope = urls.filterNot { isUrlInScope(it, config, api) }
+        val outOfScope = urls.filterNot { isUrlInScope({ it }, config, api) }
         if (outOfScope.isNotEmpty()) {
             return@mcpTool "Start audit denied: out of scope URLs ${outOfScope.joinToString(", ")}"
         }
@@ -532,6 +543,11 @@ private fun Server.registerScannerControlTools(api: MontoyaApi, config: McpConfi
     ) {
         val allowed = ActionApprovalSecurity.checkActionPermission(ActionType.SCANNER, "start crawl of ${urls.size} URL(s)", config)
         if (!allowed) return@mcpTool "Start crawl denied by Burp Suite"
+
+        val outOfScope = urls.filterNot { isUrlInScope({ it }, config, api) }
+        if (outOfScope.isNotEmpty()) {
+            return@mcpTool "Start crawl denied: out of scope URLs ${outOfScope.joinToString(", ")}"
+        }
 
         val crawl = api.scanner().startCrawl(CrawlConfiguration.crawlConfiguration(*urls.toTypedArray()))
         val id = registerTask(crawl)
@@ -611,7 +627,7 @@ private fun Server.registerSiteMapTools(api: MontoyaApi, config: McpConfig) {
     mcpUnitTool<AddToSiteMap>("Adds a request/response pair to Burp's site map") {
         val fixedContent = normalizeHttpContent(content)
         val request = HttpRequest.httpRequest(toMontoyaService(), fixedContent)
-        api.siteMap().add(HttpRequestResponse.httpRequestResponse(request, null))
+        api.siteMap().add(HttpRequestResponse.httpRequestResponse(request, HttpResponse.httpResponse()))
     }
 }
 
@@ -661,7 +677,8 @@ private fun Server.registerExtraUtilityTools(api: MontoyaApi, config: McpConfig)
         } catch (_: IllegalArgumentException) {
             return@mcpTool "Unknown algorithm '$algorithm'. Example values: MD5, SHA_1, SHA_256, SHA_512."
         }
-        api.utilities().cryptoUtils().generateDigest(ByteArray.byteArray(content), algorithm).toString()
+        api.utilities().cryptoUtils().generateDigest(ByteArray.byteArray(content), algorithm)
+            .getBytes().joinToString("") { "%02x".format(it) }
     }
 
     mcpTool<ReadJsonPath>("Reads a value from a JSON document using Burp's JSON path syntax") {
