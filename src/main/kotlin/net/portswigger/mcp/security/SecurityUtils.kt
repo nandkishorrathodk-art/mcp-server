@@ -31,6 +31,14 @@ private val SENSITIVE_KEYS = setOf(
     "password",             // socks proxy, platform auth, upstream proxy, client certs, app login
     "certificate_password", // proxy request listener PKCS12 password
     "hashed_key",           // Burp REST API key (SHA-256 of the actual key)
+    "api_key",              // Burp REST API key, where stored verbatim
+    "secret",               // generic secret fields (e.g. OAuth client secrets)
+    "client_secret",
+    "token",
+    "access_token",
+    "refresh_token",
+    "private_key",
+    "proxy_password",
 )
 
 private const val REDACTED = "*****"

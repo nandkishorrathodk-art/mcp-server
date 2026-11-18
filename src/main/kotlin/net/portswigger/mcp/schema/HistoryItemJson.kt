@@ -13,6 +13,20 @@ private const val TRUNCATION_MARKER = "... (truncated)"
 internal inline fun <reified T> encodeHistoryItem(item: T): String =
     limitHistoryItemJson(Json.encodeToString(item))
 
+/**
+ * Truncates plain text (e.g. a raw HTTP response) to [maxLength] characters, appending a marker.
+ * Returns the input unchanged when it already fits.
+ */
+fun limitText(text: String, maxLength: Int): String {
+    if (maxLength <= 0 || text.length <= maxLength) return text
+    if (maxLength <= TRUNCATION_MARKER.length) return TRUNCATION_MARKER.take(maxLength)
+    var prefixLength = maxLength - TRUNCATION_MARKER.length
+    if (prefixLength > 0 && text[prefixLength - 1].isHighSurrogate() && text[prefixLength].isLowSurrogate()) {
+        prefixLength--
+    }
+    return text.take(prefixLength) + TRUNCATION_MARKER
+}
+
 @PublishedApi
 internal fun limitHistoryItemJson(serialized: String): String {
     if (serialized.length <= MAX_HISTORY_ITEM_LENGTH) return serialized

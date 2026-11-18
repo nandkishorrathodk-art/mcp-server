@@ -1,6 +1,6 @@
 ---
 name: burp-mcp
-description: Use when working with Burp Suite through the `burp` MCP server - reading Proxy HTTP or WebSocket history, sending HTTP/1.1 or HTTP/2 requests through Burp, creating Repeater or Intruder tabs, generating or polling Burp Collaborator payloads, reading scanner issues, encoding/decoding, or reading and changing Burp configuration. Also use when a `burp` tool call hangs, is denied, or the server will not connect.
+description: Use when working with Burp Suite through the `burp` MCP server - reading Proxy HTTP or WebSocket history, reading the site map or Organizer, sending HTTP/1.1 or HTTP/2 requests through Burp, creating Repeater or Intruder tabs, handing requests to Organizer/Decoder/Comparer, starting or checking Scanner audits and crawls, managing target scope, generating or polling Burp Collaborator payloads, reading scanner issues, encoding/decoding/hashing, or reading and changing Burp configuration. Also use when a `burp` tool call hangs, is denied, or the server will not connect.
 ---
 
 # Burp Suite MCP server
@@ -34,14 +34,17 @@ Ask the user to fix Burp-side problems; you cannot start Burp or load the extens
 
 ## Approvals: why a call hangs
 
-By default Burp asks the user before the extension does anything sensitive. The tool call blocks until
-they answer the dialog in Burp.
+By default Burp asks the user before the extension does anything sensitive: sending an HTTP request,
+reading project data (history, Organizer, site map), or changing Burp state (scanner tasks, scope, intercept).
+The tool call blocks until they answer the dialog in Burp.
 
 - **Sending requests** (`send_http1_request`, `send_http2_request`): dialog offers Allow Once,
   Always Allow Host, Always Allow Host:Port, Deny. Hosts in the `MCP` tab's auto-approve list skip it
   (`*.example.com` wildcards work).
-- **Reading data** (Proxy HTTP history, WebSocket history, Organizer): dialog offers Allow Once,
+- **Reading data** (Proxy HTTP history, WebSocket history, Organizer, site map): dialog offers Allow Once,
   Always Allow, Deny.
+- **Changing state** (scanner tasks, scope edits, intercept toggling, task engine): dialog offers Allow
+  Once, Deny. Only appears when the user has ticked **Require approval for actions**.
 
 If a call is slow, tell the user Burp is probably waiting for them to approve it. A denial comes back as a
 normal result such as `Send HTTP request denied by Burp Suite` or `HTTP history access denied by Burp Suite`.
@@ -62,6 +65,7 @@ entry including `url`; an entry with only the approval mode fails with `invalid 
 | `get_proxy_http_history` | Pages through all Proxy history in order. |
 | `get_proxy_websocket_history[_regex]` | Same for WebSocket messages. |
 | `get_organizer_items[_regex]` | Items the user saved to Organizer. Often the ones they care about most. |
+| `get_site_map[_regex]` | Everything Burp has seen for the target, including crawled and scanned paths. |
 | `get_scanner_issues` | Issues Burp Scanner has found (Professional only). |
 
 All of these take `count` and `offset`. Start small (`count` 5-20) and page with `offset`;
@@ -82,6 +86,14 @@ Both also take `targetHostname`, `targetPort` and `usesHttps`; these decide wher
 `Host` header. Line endings in `content` are normalised to CRLF, and `\r\n` written as a literal escape is
 accepted too. Keep `Host` and `Content-Length` consistent with what you send.
 
+Optional extras: `redirectionMode` (`NEVER`, `ALWAYS`, `SAME_HOST`, `IN_SCOPE`) and `responseTimeoutMillis`
+control how Burp follows redirects and how long it waits. `send_http1_request` also takes `httpMode`
+(`AUTO`, `HTTP_1`, `HTTP_2`, `HTTP_2_IGNORE_ALPN`). `maxResponseLength` caps the returned body (0 = no cap);
+above the cap the body is cut and marked `... (truncated)`.
+
+When the user has ticked **Only allow requests to in-scope targets**, both tools refuse targets outside
+Burp's target scope.
+
 The result is the raw response, or `<no response>` if nothing came back.
 
 ### Handing work to the user
@@ -91,10 +103,31 @@ The result is the raw response, or `<no response>` if nothing came back.
 | `create_repeater_tab_http2` | Default for modern targets. Same fields as `send_http2_request` plus optional `tabName`. |
 | `create_repeater_tab` | HTTP/1.1 Repeater tab from raw `content`. |
 | `send_to_intruder` | Raw HTTP/1.1 request into Intruder for the user to set positions. |
+| `send_to_organizer` | Raw HTTP/1.1 request into Organizer for later review (needs approval). |
+| `send_to_decoder` | A value into Decoder for manual inspection. |
+| `send_to_comparer` | One or more values into Comparer for a manual diff. |
 | `get_active_editor_contents` / `set_active_editor_contents` | Read or replace the text in whichever Burp message editor the user has focused. Returns `<No active editor>` if focus is elsewhere. |
 
-These do not send anything and need no approval. Use them when the user wants to carry on by hand, and give
-the tab a name that says what it is for.
+These do not send anything to the target. `send_to_organizer` needs approval; the rest do not. Use them when
+the user wants to carry on by hand, and give the tab a name that says what it is for.
+
+### Scanner control (Professional only)
+
+| Tool | Use |
+|---|---|
+| `start_audit` | Audit one or more `urls`. Returns a task ID. Requires approval and an in-scope target. |
+| `start_crawl` | Crawl one or more seed `urls`. Returns a task ID. Requires approval. |
+| `get_scan_task_status` | Report `statusMessage`, request/error counts and issues for a task ID. |
+| `delete_scan_task` | Remove a task the server started. Requires approval. |
+
+Task IDs only live for the current session; a restart forgets them.
+
+### Scope
+
+| Tool | Use |
+|---|---|
+| `is_in_scope` | `true`/`false` for a `url`. |
+| `include_in_scope` / `exclude_from_scope` | Edit Burp's target scope. Require approval. |
 
 ### Out-of-band testing (Professional only)
 
@@ -105,8 +138,10 @@ the tab a name that says what it is for.
 
 ### Utilities
 
-`url_encode`, `url_decode`, `base64_encode`, `base64_decode`, `generate_random_string` (`length`,
-`characterSet`). Use them when you need Burp's exact encoding; otherwise encoding locally is fine.
+`url_encode`, `url_decode`, `base64_encode`, `base64_decode`, `html_encode`, `html_decode`, `ascii_to_hex`,
+`hex_to_ascii`, `generate_hash` (`content`, `algorithm` such as `SHA_256`), `generate_random_string`
+(`length`, `characterSet`) and `read_json_path` (`json`, `path`). Use them when you need Burp's exact
+encoding; otherwise encoding locally is fine.
 
 ### Burp state and configuration
 
@@ -119,10 +154,8 @@ the tab a name that says what it is for.
 
 The `set_*_options` tools only work when the user has ticked **Enable tools that can edit your config** in
 the `MCP` tab; otherwise they return a message saying so. Export first to learn the schema, then send only
-the keys you are changing.
-
-Their descriptions have the top-level key swapped. Use the key that matches the tool, not the description:
-`set_project_options` takes `{"project_options": {...}}` and `set_user_options` takes `{"user_options": {...}}`.
+the keys you are changing. `set_project_options` takes `{"project_options": {...}}` and `set_user_options`
+takes `{"user_options": {...}}`.
 
 ## Ground rules
 

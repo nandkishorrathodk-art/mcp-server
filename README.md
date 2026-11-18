@@ -12,6 +12,8 @@ For more information about the protocol visit: [modelcontextprotocol.io](https:/
 - Automatic installation for Claude Desktop
 - Serves both Streamable HTTP (`/mcp`) and legacy SSE (`/`) transports
 - Comes with packaged Stdio MCP proxy server
+- Broad tool coverage: HTTP/1.1 and HTTP/2 requests, Repeater, Intruder, Proxy history, WebSocket history, Organizer, site map, Scanner control (Pro), Collaborator, scope management, and encoding/hashing utilities
+- Granular approval gates for HTTP requests, project data access (history, Organizer, site map) and state-changing actions (scanner, scope, intercept)
 
 ## Usage
 
@@ -66,7 +68,47 @@ Upon successful loading, the MCP Server Extension will be active within Burp Sui
 Configuration for the extension is done through the Burp Suite UI in the `MCP` tab.
 - **Toggle the MCP Server**: The `Enabled` checkbox controls whether the MCP server is active.
 - **Enable config editing**: The `Enable tools that can edit your config` checkbox allows the MCP server to expose tools which can edit Burp configuration files.
+- **Require approval for HTTP requests**: Prompts before the server sends any HTTP request on your behalf.
+- **Require approval for actions**: Prompts before the server changes Burp state (scanner tasks, scope edits, intercept toggling).
+- **Only allow requests to in-scope targets**: When enabled, `send_http1_request`, `send_http2_request` and the Scanner tools refuse to touch targets that are not in Burp's target scope.
+- **Require approval for project data access**: Prompts before the server reads project data. You can pre-approve specific sources (HTTP history, WebSocket history, Organizer, site map) with the corresponding `Always allow ...` checkboxes.
+- **Filter config credentials**: Hides secrets in exported/edited config files.
 - **Advanced options**: You can configure the port and host for the MCP server. By default, it listens on `http://127.0.0.1:9876`.
+
+### Tools
+
+The server exposes the following tools. Community Edition exposes a subset; Scanner and Collaborator tools require Burp Suite Professional.
+
+| Tool | Description |
+| --- | --- |
+| `send_http1_request` | Sends an HTTP/1.1 request. Supports optional `httpMode`, `redirectionMode`, `responseTimeoutMillis` and `maxResponseLength`. |
+| `send_http2_request` | Sends an HTTP/2 request. Supports optional `redirectionMode`, `responseTimeoutMillis` and `maxResponseLength`. |
+| `create_repeater_tab` | Creates an HTTP/1.1 Repeater tab. |
+| `create_repeater_tab_http2` | Creates an HTTP/2 Repeater tab. |
+| `send_to_intruder` | Sends a request to Intruder. |
+| `send_to_organizer` | Sends a request to the Organizer (requires approval). |
+| `send_to_decoder` | Sends a value to Decoder. |
+| `send_to_comparer` | Sends one or more values to Comparer. |
+| `get_proxy_http_history` / `get_proxy_http_history_regex` | Reads the proxy HTTP history. |
+| `get_proxy_websocket_history` / `get_proxy_websocket_history_regex` | Reads the proxy WebSocket history. |
+| `get_organizer_items` / `get_organizer_items_regex` | Reads Organizer items. |
+| `get_site_map` / `get_site_map_regex` | Reads the site map. |
+| `add_to_site_map` | Adds a request/response pair to the site map. |
+| `is_in_scope` | Checks whether a URL is in Burp's target scope. |
+| `include_in_scope` / `exclude_from_scope` | Edits Burp's target scope (requires approval). |
+| `get_scanner_issues` | Lists Scanner issues (Pro). |
+| `start_audit` / `start_crawl` | Starts Scanner tasks (Pro, requires approval). |
+| `get_scan_task_status` / `delete_scan_task` | Manages Scanner tasks started by the server (Pro). |
+| `generate_collaborator_payload` / `get_collaborator_interactions` | Burp Collaborator OOB testing (Pro). |
+| `set_task_execution_engine_state` / `set_proxy_intercept_state` | Controls the task engine and proxy intercept (requires approval). |
+| `url_encode` / `url_decode` / `base64_encode` / `base64_decode` | Encoding utilities. |
+| `html_encode` / `html_decode` | HTML encoding utilities. |
+| `ascii_to_hex` / `hex_to_ascii` | Hex conversion utilities. |
+| `generate_hash` | Generates a hash (MD5, SHA-1, SHA-256, SHA-512). |
+| `generate_random_string` | Generates a random string. |
+| `read_json_path` | Reads a value from JSON using Burp's JSON path syntax. |
+| `get_active_editor_contents` / `set_active_editor_contents` | Reads and writes the active message editor. |
+| `export_config` / `set_project_options` / `set_user_options` | Config tools (enabled by the config-editing toggle). |
 
 ### Claude Desktop Client
 

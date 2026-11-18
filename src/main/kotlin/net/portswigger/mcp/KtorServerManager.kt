@@ -22,6 +22,14 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 const val STREAMABLE_HTTP_PATH = "/mcp"
+
+/**
+ * Reads the extension version from this JAR's manifest so the MCP handshake reports the
+ * version actually loaded, rather than a hardcoded string that drifts from the build.
+ */
+private fun extensionVersion(): String =
+    KtorServerManager::class.java.`package`?.implementationVersion ?: "unknown"
+
 private const val MCP_SESSION_ID_HEADER = "Mcp-Session-Id"
 private const val MCP_PROTOCOL_VERSION_HEADER = "Mcp-Protocol-Version"
 
@@ -39,7 +47,7 @@ class KtorServerManager(private val api: MontoyaApi) : ServerManager {
                 server = null
 
                 val mcpServer = Server(
-                    serverInfo = Implementation("burp-suite", "1.1.2"), options = ServerOptions(
+                    serverInfo = Implementation("burp-suite", extensionVersion()), options = ServerOptions(
                         capabilities = ServerCapabilities(
                             tools = ServerCapabilities.Tools(listChanged = false)
                         )

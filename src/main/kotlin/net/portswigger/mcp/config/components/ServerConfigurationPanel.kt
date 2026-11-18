@@ -18,6 +18,7 @@ class ServerConfigurationPanel(
     private lateinit var alwaysAllowHttpHistoryCheckBox: JCheckBox
     private lateinit var alwaysAllowWebSocketHistoryCheckBox: JCheckBox
     private lateinit var alwaysAllowOrganizerCheckBox: JCheckBox
+    private lateinit var alwaysAllowSitemapCheckBox: JCheckBox
 
     init {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -62,6 +63,20 @@ class ServerConfigurationPanel(
         add(httpRequestApprovalCheckBox)
         add(createVerticalStrut(Design.Spacing.MD))
 
+        val actionApprovalCheckBox = createStandardCheckBox(
+            "Require approval for actions (scanner, scope, intercept)", config.requireActionApproval
+        ) { config.requireActionApproval = it }
+        add(actionApprovalCheckBox)
+        add(createVerticalStrut(Design.Spacing.MD))
+
+        val enforceScopeCheckBox = createCheckBoxWithSubtitle(
+            "Only allow requests to in-scope targets",
+            "Blocks send_http*_request and scanner tools when the target is not in Burp's target scope",
+            config.enforceScope
+        ) { config.enforceScope = it }
+        add(enforceScopeCheckBox)
+        add(createVerticalStrut(Design.Spacing.MD))
+
         val dataAccessApprovalCheckBox = createDataAccessApprovalCheckBox()
         add(dataAccessApprovalCheckBox)
         add(createVerticalStrut(Design.Spacing.SM))
@@ -86,6 +101,14 @@ class ServerConfigurationPanel(
             config.requireDataAccessApproval
         ) { config.alwaysAllowOrganizer = it }
         add(alwaysAllowOrganizerCheckBox)
+        add(createVerticalStrut(Design.Spacing.SM))
+
+        alwaysAllowSitemapCheckBox = createIndentedCheckBox(
+            "Always allow site map access",
+            config.alwaysAllowSitemap,
+            config.requireDataAccessApproval
+        ) { config.alwaysAllowSitemap = it }
+        add(alwaysAllowSitemapCheckBox)
         add(createVerticalStrut(Design.Spacing.MD))
 
         val filterConfigCredentialsCheckBox = createCheckBoxWithSubtitle(
@@ -121,13 +144,16 @@ class ServerConfigurationPanel(
                 config.alwaysAllowHttpHistory = false
                 config.alwaysAllowWebSocketHistory = false
                 config.alwaysAllowOrganizer = false
+                config.alwaysAllowSitemap = false
                 alwaysAllowHttpHistoryCheckBox.isSelected = false
                 alwaysAllowWebSocketHistoryCheckBox.isSelected = false
                 alwaysAllowOrganizerCheckBox.isSelected = false
+                alwaysAllowSitemapCheckBox.isSelected = false
             }
             alwaysAllowHttpHistoryCheckBox.isEnabled = enabled
             alwaysAllowWebSocketHistoryCheckBox.isEnabled = enabled
             alwaysAllowOrganizerCheckBox.isEnabled = enabled
+            alwaysAllowSitemapCheckBox.isEnabled = enabled
         }
     }
 
@@ -136,6 +162,7 @@ class ServerConfigurationPanel(
             alwaysAllowHttpHistoryCheckBox.isSelected = config.alwaysAllowHttpHistory
             alwaysAllowWebSocketHistoryCheckBox.isSelected = config.alwaysAllowWebSocketHistory
             alwaysAllowOrganizerCheckBox.isSelected = config.alwaysAllowOrganizer
+            alwaysAllowSitemapCheckBox.isSelected = config.alwaysAllowSitemap
         }
     }
 

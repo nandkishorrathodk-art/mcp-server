@@ -42,6 +42,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import java.net.ServerSocket
+import java.util.regex.Pattern
 import javax.swing.JTextArea
 
 class ToolsKtTest {
@@ -61,6 +62,8 @@ class ToolsKtTest {
             every { getBoolean("configEditingTooling") } returns true
             every { getBoolean("requireHttpRequestApproval") } returns false
             every { getBoolean("requireDataAccessApproval") } returns false
+            every { getBoolean("requireActionApproval") } returns false
+            every { getBoolean("enforceScope") } returns false
             every { getBoolean("_alwaysAllowHttpHistory") } returns false
             every { getBoolean("_alwaysAllowWebSocketHistory") } returns false
             every { getBoolean("_alwaysAllowOrganizer") } returns false
@@ -1101,6 +1104,271 @@ class ToolsKtTest {
             assertTrue(tools.any { it.name == "get_scanner_issues" })
             assertTrue(tools.any { it.name == "generate_collaborator_payload" })
             assertTrue(tools.any { it.name == "get_collaborator_interactions" })
+        }
+    }
+
+    @Nested
+    inner class ScopeToolsTests {
+        private val scope = mockk<burp.api.montoya.scope.Scope>()
+
+        @Test
+        fun `is in scope should reflect scope check`() {
+            every { api.scope() } returns scope
+            every { scope.isInScope("https://example.com/") } returns true
+
+            runBlocking {
+                val result = client.callTool("is_in_scope", mapOf("url" to "https://example.com/"))
+                delay(100)
+                result.expectTextContent("true")
+            }
+
+            verify(exactly = 1) { scope.isInScope("https://example.com/") }
+        }
+
+        @Test
+        fun `include in scope should add url when approved`() {
+            every { api.scope() } returns scope
+            every { scope.includeInScope(any()) } just runs
+
+            runBlocking {
+                val result = client.callTool("include_in_scope", mapOf("url" to "https://example.com/"))
+                delay(100)
+                result.expectTextContent("Added to scope: https://example.com/")
+            }
+
+            verify(exactly = 1) { scope.includeInScope("https://example.com/") }
+        }
+
+        @Test
+        fun `exclude from scope should remove url when approved`() {
+            every { api.scope() } returns scope
+            every { scope.excludeFromScope(any()) } just runs
+
+            runBlocking {
+                val result = client.callTool("exclude_from_scope", mapOf("url" to "https://example.com/"))
+                delay(100)
+                result.expectTextContent("Removed from scope: https://example.com/")
+            }
+
+            verify(exactly = 1) { scope.excludeFromScope("https://example.com/") }
+        }
+    }
+
+    @Nested
+    inner class SiteMapToolsTests {
+        private val siteMap = mockk<burp.api.montoya.sitemap.SiteMap>()
+
+        @Test
+        fun `get sitemap should paginate request responses`() {
+            val item = mockk<burp.api.montoya.http.message.HttpRequestResponse>()
+            every { api.siteMap() } returns siteMap
+            every { siteMap.requestResponses() } returns listOf(item)
+
+            mockkStatic("net.portswigger.mcp.schema.SerializationKt")
+            every { item.toSerializableForm() } returns HttpRequestResponse(
+                request = "GET /sitemap HTTP/1.1",
+                response = "HTTP/1.1 200 OK",
+                notes = null
+            )
+
+            runBlocking {
+                val text = client.callTool("get_site_map", mapOf("count" to 10, "offset" to 0)).expectTextContent()
+                assertTrue(text.contains("GET /sitemap"))
+            }
+        }
+
+        @Test
+        fun `get sitemap regex should filter entries`() {
+            val match = mockk<burp.api.montoya.http.message.HttpRequestResponse>()
+            val noMatch = mockk<burp.api.montoya.http.message.HttpRequestResponse>()
+            every { api.siteMap() } returns siteMap
+            every { siteMap.requestResponses() } returns listOf(match, noMatch)
+            every { match.contains(any<Pattern>()) } returns true
+            every { noMatch.contains(any<Pattern>()) } returns false
+
+            mockkStatic("net.portswigger.mcp.schema.SerializationKt")
+            every { match.toSerializableForm() } returns HttpRequestResponse("GET /keep", "HTTP/1.1 200 OK", null)
+            every { noMatch.toSerializableForm() } returns HttpRequestResponse("GET /drop", "HTTP/1.1 200 OK", null)
+
+            runBlocking {
+                val text = client.callTool(
+                    "get_site_map_regex", mapOf("regex" to "keep", "count" to 10, "offset" to 0)
+                ).expectTextContent()
+                assertTrue(text.contains("/keep"))
+                assertFalse(text.contains("/drop"))
+            }
+        }
+    }
+
+    @Nested
+    inner class HandoffToolsTests {
+        @Test
+        fun `send to decoder should pass bytes to decoder`() {
+            val decoder = mockk<burp.api.montoya.decoder.Decoder>()
+            val byteArray = mockk<ByteArray>()
+            every { api.decoder() } returns decoder
+            mockkStatic(ByteArray::class)
+            every { ByteArray.byteArray(any<String>()) } returns byteArray
+            every { decoder.sendToDecoder(byteArray) } just runs
+
+            runBlocking {
+                val result = client.callTool("send_to_decoder", mapOf("content" to "abc"))
+                delay(100)
+                result.expectTextContent("Executed tool")
+            }
+
+            verify(exactly = 1) { decoder.sendToDecoder(byteArray) }
+        }
+
+        @Test
+        fun `send to comparer should pass all items`() {
+            val comparer = mockk<burp.api.montoya.comparer.Comparer>()
+            val byteArray = mockk<ByteArray>()
+            every { api.comparer() } returns comparer
+            mockkStatic(ByteArray::class)
+            every { ByteArray.byteArray(any<String>()) } returns byteArray
+            every { comparer.sendToComparer(any(), any()) } just runs
+
+            runBlocking {
+                val result = client.callTool("send_to_comparer", mapOf("items" to listOf("a", "b")))
+                delay(100)
+                result.expectTextContent("Executed tool")
+            }
+
+            verify(exactly = 1) { comparer.sendToComparer(any(), any()) }
+        }
+    }
+
+    @Nested
+    inner class ExtraUtilityToolsTests {
+        @Test
+        fun `html encode should delegate to burp html utils`() {
+            val htmlUtils = mockk<burp.api.montoya.utilities.HtmlUtils>()
+            val utilities = mockk<Utilities>()
+            every { api.utilities() } returns utilities
+            every { utilities.htmlUtils() } returns htmlUtils
+            every { htmlUtils.encode(any<String>()) } returns "&lt;b&gt;"
+
+            runBlocking {
+                val result = client.callTool("html_encode", mapOf("content" to "<b>"))
+                delay(100)
+                result.expectTextContent("&lt;b&gt;")
+            }
+
+            verify(exactly = 1) { htmlUtils.encode("<b>") }
+        }
+
+        @Test
+        fun `ascii to hex should delegate to burp string utils`() {
+            val stringUtils = mockk<burp.api.montoya.utilities.StringUtils>()
+            val utilities = mockk<Utilities>()
+            every { api.utilities() } returns utilities
+            every { utilities.stringUtils() } returns stringUtils
+            every { stringUtils.convertAsciiToHexString(any<String>()) } returns "616263"
+
+            runBlocking {
+                val result = client.callTool("ascii_to_hex", mapOf("content" to "abc"))
+                delay(100)
+                result.expectTextContent("616263")
+            }
+
+            verify(exactly = 1) { stringUtils.convertAsciiToHexString("abc") }
+        }
+
+        @Test
+        fun `generate hash should reject unknown algorithm`() {
+            runBlocking {
+                val result = client.callTool("generate_hash", mapOf("content" to "abc", "algorithm" to "NOT_A_HASH"))
+                delay(100)
+                assertTrue(result.expectTextContent().startsWith("Unknown algorithm"))
+            }
+        }
+
+        @Test
+        fun `generate hash should delegate to crypto utils`() {
+            val cryptoUtils = mockk<burp.api.montoya.utilities.CryptoUtils>()
+            val utilities = mockk<Utilities>()
+            val byteArray = mockk<ByteArray>()
+            val digest = mockk<ByteArray>()
+            every { api.utilities() } returns utilities
+            every { utilities.cryptoUtils() } returns cryptoUtils
+            mockkStatic(ByteArray::class)
+            every { ByteArray.byteArray(any<String>()) } returns byteArray
+            every { cryptoUtils.generateDigest(byteArray, any()) } returns digest
+            every { digest.toString() } returns "deadbeef"
+
+            runBlocking {
+                val result = client.callTool(
+                    "generate_hash", mapOf("content" to "abc", "algorithm" to "SHA_256")
+                )
+                delay(100)
+                result.expectTextContent("deadbeef")
+            }
+
+            verify(exactly = 1) { cryptoUtils.generateDigest(byteArray, any()) }
+        }
+    }
+
+    @Nested
+    inner class ScannerControlToolsTests {
+        @BeforeEach
+        fun setupProfessionalEdition() {
+            val burpSuite = mockk<burp.api.montoya.burpsuite.BurpSuite>()
+            val version = mockk<burp.api.montoya.core.Version>()
+            every { api.burpSuite() } returns burpSuite
+            every { burpSuite.version() } returns version
+            every { version.edition() } returns BurpSuiteEdition.PROFESSIONAL
+            every { burpSuite.taskExecutionEngine() } returns mockk(relaxed = true)
+            every { burpSuite.exportProjectOptionsAsJson() } returns "{}"
+            every { burpSuite.exportUserOptionsAsJson() } returns "{}"
+            every { burpSuite.importProjectOptionsFromJson(any()) } just runs
+            every { burpSuite.importUserOptionsFromJson(any()) } just runs
+
+            serverManager.stop {}
+            serverStarted = false
+            serverManager.start(config) { state ->
+                if (state is ServerState.Running) serverStarted = true
+            }
+
+            runBlocking {
+                var attempts = 0
+                while (!serverStarted && attempts < 30) {
+                    delay(100)
+                    attempts++
+                }
+                if (!serverStarted) throw IllegalStateException("Server failed to start after timeout")
+                client.connectToServer("http://127.0.0.1:${testPort}")
+            }
+        }
+
+        @Test
+        fun `start audit should create an audit task and report id`() {
+            val scanner = mockk<burp.api.montoya.scanner.Scanner>()
+            val audit = mockk<burp.api.montoya.scanner.audit.Audit>()
+            every { api.scanner() } returns scanner
+            every { scanner.startAudit(any()) } returns audit
+            every { audit.addRequest(any()) } just runs
+            mockkStatic(HttpRequest::class, burp.api.montoya.scanner.AuditConfiguration::class)
+            every { HttpRequest.httpRequestFromUrl(any()) } returns mockk(relaxed = true)
+            every { burp.api.montoya.scanner.AuditConfiguration.auditConfiguration(any()) } returns mockk(relaxed = true)
+
+            runBlocking {
+                val result = client.callTool("start_audit", mapOf("urls" to listOf("https://example.com/")))
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.startsWith("Started audit"), "unexpected response: $text")
+            }
+
+            verify(exactly = 1) { scanner.startAudit(any()) }
+        }
+
+        @Test
+        fun `get scan task status should report unknown task`() {
+            runBlocking {
+                val result = client.callTool("get_scan_task_status", mapOf("taskId" to "scan-999"))
+                delay(100)
+                assertTrue(result.expectTextContent().contains("No such scan task"))
+            }
         }
     }
 }

@@ -17,6 +17,8 @@ class McpConfig(storage: PersistedObject, private val logging: Logging) {
     var port by storage.int(9876)
     var requireHttpRequestApproval by storage.boolean(true)
     var requireDataAccessApproval by storage.boolean(true)
+    var requireActionApproval by storage.boolean(true)
+    var enforceScope by storage.boolean(false)
 
     private var _alwaysAllowHttpHistory by storage.boolean(false)
     var alwaysAllowHttpHistory: Boolean
@@ -44,6 +46,16 @@ class McpConfig(storage: PersistedObject, private val logging: Logging) {
         set(value) {
             if (_alwaysAllowOrganizer != value) {
                 _alwaysAllowOrganizer = value
+                notifyDataAccessChanged()
+            }
+        }
+
+    private var _alwaysAllowSitemap by storage.boolean(false)
+    var alwaysAllowSitemap: Boolean
+        get() = _alwaysAllowSitemap
+        set(value) {
+            if (_alwaysAllowSitemap != value) {
+                _alwaysAllowSitemap = value
                 notifyDataAccessChanged()
             }
         }

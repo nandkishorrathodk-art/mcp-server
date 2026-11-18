@@ -5,9 +5,20 @@ import burp.api.montoya.burpsuite.TaskExecutionEngine.TaskExecutionEngineState.P
 import burp.api.montoya.burpsuite.TaskExecutionEngine.TaskExecutionEngineState.RUNNING
 import burp.api.montoya.collaborator.InteractionFilter
 import burp.api.montoya.core.BurpSuiteEdition
+import burp.api.montoya.core.ByteArray
+import burp.api.montoya.scanner.AuditConfiguration
+import burp.api.montoya.scanner.BuiltInAuditConfiguration
+import burp.api.montoya.scanner.CrawlConfiguration
+import burp.api.montoya.scanner.ScanTask
+import burp.api.montoya.scanner.audit.Audit
+import burp.api.montoya.utilities.DigestAlgorithm
+import burp.api.montoya.http.Http
 import burp.api.montoya.http.HttpMode
 import burp.api.montoya.http.HttpService
+import burp.api.montoya.http.RedirectionMode
+import burp.api.montoya.http.RequestOptions
 import burp.api.montoya.http.message.HttpHeader
+import burp.api.montoya.http.message.HttpRequestResponse
 import burp.api.montoya.http.message.requests.HttpRequest
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import kotlinx.coroutines.currentCoroutineContext
@@ -16,11 +27,15 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.schema.encodeHistoryItem
+import net.portswigger.mcp.schema.limitText
 import net.portswigger.mcp.schema.toSerializableForm
+import net.portswigger.mcp.security.ActionApprovalSecurity
+import net.portswigger.mcp.security.ActionType
 import net.portswigger.mcp.security.DataAccessSecurity
 import net.portswigger.mcp.security.DataAccessType
 import net.portswigger.mcp.security.HttpRequestSecurity
 import net.portswigger.mcp.security.filterConfigCredentials
+import net.portswigger.mcp.security.isUrlInScope
 import java.awt.KeyboardFocusManager
 import java.util.regex.Pattern
 import javax.swing.JTextArea
@@ -35,6 +50,59 @@ private suspend fun checkDataAccessOrDeny(
     }
     api.logging().logToOutput("MCP $logMessage access granted")
     return true
+}
+
+internal fun String.toHttpMode(): HttpMode = when (uppercase()) {
+    "AUTO" -> HttpMode.AUTO
+    "HTTP_1" -> HttpMode.HTTP_1
+    "HTTP_2" -> HttpMode.HTTP_2
+    "HTTP_2_IGNORE_ALPN" -> HttpMode.HTTP_2_IGNORE_ALPN
+    else -> throw IllegalArgumentException("Unknown httpMode '$this'. Expected one of AUTO, HTTP_1, HTTP_2, HTTP_2_IGNORE_ALPN")
+}
+
+/**
+ * Sends a request, layering optional per-call overrides on top of Montoya's defaults.
+ * Uses the plain overloads when nothing extra was requested, so behaviour matches the
+ * extension's original tools.
+ */
+private fun Http.sendWithOptions(
+    request: HttpRequest,
+    httpMode: HttpMode? = null,
+    redirectionMode: String? = null,
+    responseTimeoutMillis: Long? = null
+): HttpRequestResponse? {
+    val needsRequestOptions = redirectionMode != null || (responseTimeoutMillis != null && responseTimeoutMillis > 0)
+
+    return when {
+        needsRequestOptions -> {
+            val options = RequestOptions.requestOptions()
+            if (httpMode != null) options.withHttpMode(httpMode)
+            when (redirectionMode?.uppercase()) {
+                "ALWAYS" -> options.withRedirectionMode(RedirectionMode.ALWAYS)
+                "NEVER" -> options.withRedirectionMode(RedirectionMode.NEVER)
+                "SAME_HOST" -> options.withRedirectionMode(RedirectionMode.SAME_HOST)
+                "IN_SCOPE" -> options.withRedirectionMode(RedirectionMode.IN_SCOPE)
+            }
+            if (responseTimeoutMillis != null && responseTimeoutMillis > 0) {
+                options.withResponseTimeout(responseTimeoutMillis)
+            }
+            sendRequest(request, options)
+        }
+
+        httpMode != null -> sendRequest(request, httpMode)
+
+        else -> sendRequest(request)
+    }
+}
+
+/**
+ * Serialises a request/response, applying an optional character cap so a large response body
+ * cannot blow up the client's context window. `maxResponseLength <= 0` means unlimited.
+ */
+private fun formatResponse(response: HttpRequestResponse?, maxResponseLength: Int): String {
+    if (response == null) return "<no response>"
+    val text = response.toString()
+    return if (maxResponseLength > 0) limitText(text, maxResponseLength) else text
 }
 
 private fun buildHttp2HeaderList(
@@ -118,15 +186,26 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
             return@mcpTool "Send HTTP request denied by Burp Suite"
         }
 
+        val scopeUrl = "http${if (usesHttps) "s" else ""}://$targetHostname:$targetPort/"
+        if (!isUrlInScope(scopeUrl, config, api)) {
+            api.logging().logToOutput("MCP HTTP request out of scope: $targetHostname:$targetPort")
+            return@mcpTool "Send HTTP request denied: target is out of scope"
+        }
+
         api.logging().logToOutput("MCP HTTP/1.1 request: $targetHostname:$targetPort")
 
         val fixedContent = normalizeHttpContent(content)
 
         val request = HttpRequest.httpRequest(toMontoyaService(), fixedContent)
         currentCoroutineContext().ensureActive()
-        val response = api.http().sendRequest(request)
+        val response = api.http().sendWithOptions(
+            request,
+            httpMode = httpMode?.toHttpMode(),
+            redirectionMode = redirectionMode,
+            responseTimeoutMillis = responseTimeoutMillis
+        )
 
-        response?.toString() ?: "<no response>"
+        formatResponse(response, maxResponseLength)
     }
 
     mcpTool<SendHttp2Request>("Issues an HTTP/2 request and returns the response. Do NOT pass headers to the body parameter.") {
@@ -150,15 +229,26 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
             return@mcpTool "Send HTTP request denied by Burp Suite"
         }
 
+        val scopeUrl = "http${if (usesHttps) "s" else ""}://$targetHostname:$targetPort/"
+        if (!isUrlInScope(scopeUrl, config, api)) {
+            api.logging().logToOutput("MCP HTTP request out of scope: $targetHostname:$targetPort")
+            return@mcpTool "Send HTTP request denied: target is out of scope"
+        }
+
         api.logging().logToOutput("MCP HTTP/2 request: $targetHostname:$targetPort")
 
         val headerList = buildHttp2HeaderList(pseudoHeaders, headers)
 
         val request = HttpRequest.http2Request(toMontoyaService(), headerList, requestBody)
         currentCoroutineContext().ensureActive()
-        val response = api.http().sendRequest(request, HttpMode.HTTP_2)
+        val response = api.http().sendWithOptions(
+            request,
+            httpMode = HttpMode.HTTP_2,
+            redirectionMode = redirectionMode,
+            responseTimeoutMillis = responseTimeoutMillis
+        )
 
-        response?.toString() ?: "<no response>"
+        formatResponse(response, maxResponseLength)
     }
 
     mcpUnitTool<CreateRepeaterTab>("Creates an HTTP/1.1 Repeater tab with the specified raw HTTP request and optional tab name. Make sure to use carriage returns appropriately. Prefer create_repeater_tab_http2 for modern web targets that speak HTTP/2.") {
@@ -226,7 +316,7 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
     val toolingDisabledMessage =
         "User has disabled configuration editing. They can enable it in the MCP tab in Burp by selecting 'Enable tools that can edit your config'"
 
-    mcpTool<SetProjectOptions>("Sets project-level configuration in JSON format. This will be merged with existing configuration. Make sure to export before doing this, so you know what the schema is. Make sure the JSON has a top level 'user_options' object!") {
+    mcpTool<SetProjectOptions>("Sets project-level configuration in JSON format. This will be merged with existing configuration. Make sure to export before doing this, so you know what the schema is. Make sure the JSON has a top level 'project_options' object!") {
         if (config.configEditingTooling) {
             api.logging().logToOutput("Setting project-level configuration: $json")
             api.burpSuite().importProjectOptionsFromJson(json)
@@ -238,7 +328,7 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
     }
 
 
-    mcpTool<SetUserOptions>("Sets user-level configuration in JSON format. This will be merged with existing configuration. Make sure to export before doing this, so you know what the schema is. Make sure the JSON has a top level 'project_options' object!") {
+    mcpTool<SetUserOptions>("Sets user-level configuration in JSON format. This will be merged with existing configuration. Make sure to export before doing this, so you know what the schema is. Make sure the JSON has a top level 'user_options' object!") {
         if (config.configEditingTooling) {
             api.logging().logToOutput("Setting user-level configuration: $json")
             api.burpSuite().importUserOptionsFromJson(json)
@@ -294,6 +384,8 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
                 }
             }
         }
+
+        registerScannerControlTools(api, config)
     }
 
     mcpPaginatedTool<GetProxyHttpHistory>("Displays items within the proxy HTTP history") {
@@ -358,12 +450,22 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
     }
 
     mcpTool<SetTaskExecutionEngineState>("Sets the state of Burp's task execution engine (paused or unpaused)") {
+        val allowed = ActionApprovalSecurity.checkActionPermission(
+            ActionType.TASK_ENGINE, if (running) "resume task execution" else "pause task execution", config
+        )
+        if (!allowed) return@mcpTool "Set task execution engine state denied by Burp Suite"
+
         api.burpSuite().taskExecutionEngine().state = if (running) RUNNING else PAUSED
 
         "Task execution engine is now ${if (running) "running" else "paused"}"
     }
 
     mcpTool<SetProxyInterceptState>("Enables or disables Burp Proxy Intercept") {
+        val allowed = ActionApprovalSecurity.checkActionPermission(
+            ActionType.INTERCEPT, if (intercepting) "enable intercept" else "disable intercept", config
+        )
+        if (!allowed) return@mcpTool "Set proxy intercept state denied by Burp Suite"
+
         if (intercepting) {
             api.proxy().enableIntercept()
         } else {
@@ -387,6 +489,183 @@ fun Server.registerTools(api: MontoyaApi, config: McpConfig) {
         editor.text = text
 
         "Editor text has been set"
+    }
+
+    registerScopeTools(api, config)
+    registerSiteMapTools(api, config)
+    registerHandoffTools(api, config)
+    registerExtraUtilityTools(api, config)
+}
+
+private fun Server.registerScannerControlTools(api: MontoyaApi, config: McpConfig) {
+    val scanTasks = java.util.concurrent.ConcurrentHashMap<String, ScanTask>()
+    val scanTaskCounter = java.util.concurrent.atomic.AtomicInteger(0)
+
+    fun registerTask(task: ScanTask): String {
+        val id = "scan-${scanTaskCounter.incrementAndGet()}"
+        scanTasks[id] = task
+        return id
+    }
+
+    mcpTool<StartAudit>(
+        "Starts an active/passive audit of one or more URLs using Burp Scanner (Professional only). " +
+        "Returns a task ID that can be polled with get_scan_task_status. Requires approval."
+    ) {
+        val allowed = ActionApprovalSecurity.checkActionPermission(ActionType.SCANNER, "start audit of ${urls.size} URL(s)", config)
+        if (!allowed) return@mcpTool "Start audit denied by Burp Suite"
+
+        val outOfScope = urls.filterNot { isUrlInScope(it, config, api) }
+        if (outOfScope.isNotEmpty()) {
+            return@mcpTool "Start audit denied: out of scope URLs ${outOfScope.joinToString(", ")}"
+        }
+
+        val audit = api.scanner().startAudit(AuditConfiguration.auditConfiguration(BuiltInAuditConfiguration.LEGACY_ACTIVE_AUDIT_CHECKS))
+        urls.forEach { audit.addRequest(HttpRequest.httpRequestFromUrl(it)) }
+
+        val id = registerTask(audit)
+        "Started audit $id for ${urls.size} URL(s). Poll with get_scan_task_status."
+    }
+
+    mcpTool<StartCrawl>(
+        "Starts a crawl of one or more seed URLs using Burp Scanner (Professional only). " +
+        "Returns a task ID that can be polled with get_scan_task_status. Requires approval."
+    ) {
+        val allowed = ActionApprovalSecurity.checkActionPermission(ActionType.SCANNER, "start crawl of ${urls.size} URL(s)", config)
+        if (!allowed) return@mcpTool "Start crawl denied by Burp Suite"
+
+        val crawl = api.scanner().startCrawl(CrawlConfiguration.crawlConfiguration(*urls.toTypedArray()))
+        val id = registerTask(crawl)
+        "Started crawl $id for ${urls.size} seed URL(s). Poll with get_scan_task_status."
+    }
+
+    mcpTool<GetScanTaskStatus>("Reports the status of a scanner task started via start_audit or start_crawl") {
+        val task = scanTasks[taskId] ?: return@mcpTool "No such scan task: $taskId"
+        buildString {
+            appendLine("Task: $taskId")
+            appendLine("Status: ${task.statusMessage()}")
+            appendLine("Requests: ${task.requestCount()}")
+            appendLine("Errors: ${task.errorCount()}")
+            if (task is Audit) {
+                appendLine("Insertion points: ${task.insertionPointCount()}")
+                appendLine("Issues found: ${task.issues().size}")
+            }
+        }
+    }
+
+    mcpTool<DeleteScanTask>("Deletes a scanner task started via start_audit or start_crawl. Requires approval.") {
+        val task = scanTasks[taskId] ?: return@mcpTool "No such scan task: $taskId"
+
+        val allowed = ActionApprovalSecurity.checkActionPermission(ActionType.SCANNER, "delete scan task $taskId", config)
+        if (!allowed) return@mcpTool "Delete scan task denied by Burp Suite"
+
+        task.delete()
+        scanTasks.remove(taskId)
+        "Deleted scan task $taskId"
+    }
+}
+
+private fun Server.registerScopeTools(api: MontoyaApi, config: McpConfig) {
+    mcpTool<IsInScope>("Checks whether a URL is within Burp's target scope. Returns 'true' or 'false'.") {
+        api.scope().isInScope(url).toString()
+    }
+
+    mcpTool<IncludeInScope>("Adds a URL to Burp's target scope. This changes the user's scope configuration and requires approval.") {
+        val allowed = ActionApprovalSecurity.checkActionPermission(ActionType.SCOPE, "include $url in scope", config)
+        if (!allowed) return@mcpTool "Include in scope denied by Burp Suite"
+
+        api.scope().includeInScope(url)
+        "Added to scope: $url"
+    }
+
+    mcpTool<ExcludeFromScope>("Removes a URL from Burp's target scope. This changes the user's scope configuration and requires approval.") {
+        val allowed = ActionApprovalSecurity.checkActionPermission(ActionType.SCOPE, "exclude $url from scope", config)
+        if (!allowed) return@mcpTool "Exclude from scope denied by Burp Suite"
+
+        api.scope().excludeFromScope(url)
+        "Removed from scope: $url"
+    }
+}
+
+private fun Server.registerSiteMapTools(api: MontoyaApi, config: McpConfig) {
+    mcpPaginatedTool<GetSiteMap>("Displays request/response pairs within Burp's site map") {
+        val allowed = checkDataAccessOrDeny(DataAccessType.SITEMAP, config, api, "site map")
+        if (!allowed) {
+            return@mcpPaginatedTool sequenceOf("Site map access denied by Burp Suite")
+        }
+
+        api.siteMap().requestResponses().asSequence().map { encodeHistoryItem(it.toSerializableForm()) }
+    }
+
+    mcpPaginatedTool<GetSiteMapRegex>("Displays site map entries matching a specified regex") {
+        val allowed = checkDataAccessOrDeny(DataAccessType.SITEMAP, config, api, "site map")
+        if (!allowed) {
+            return@mcpPaginatedTool sequenceOf("Site map access denied by Burp Suite")
+        }
+
+        val compiledRegex = Pattern.compile(regex)
+        api.siteMap().requestResponses().asSequence()
+            .filter { it.contains(compiledRegex) }
+            .map { encodeHistoryItem(it.toSerializableForm()) }
+    }
+
+    mcpUnitTool<AddToSiteMap>("Adds a request/response pair to Burp's site map") {
+        val fixedContent = normalizeHttpContent(content)
+        val request = HttpRequest.httpRequest(toMontoyaService(), fixedContent)
+        api.siteMap().add(HttpRequestResponse.httpRequestResponse(request, null))
+    }
+}
+
+private fun Server.registerHandoffTools(api: MontoyaApi, config: McpConfig) {
+    mcpUnitTool<SendToDecoder>("Sends a value to Burp's Decoder tool for manual inspection") {
+        api.decoder().sendToDecoder(ByteArray.byteArray(content))
+    }
+
+    mcpUnitTool<SendToComparer>("Sends one or more values to Burp's Comparer tool for manual diffing") {
+        api.comparer().sendToComparer(*items.map { ByteArray.byteArray(it) }.toTypedArray())
+    }
+
+    mcpTool<SendToOrganizer>("Sends a raw HTTP/1.1 request to the Organizer for later review. Requires approval.") {
+        val allowed = ActionApprovalSecurity.checkActionPermission(
+            ActionType.ORGANIZER, "send request to Organizer for $targetHostname:$targetPort", config
+        )
+        if (!allowed) return@mcpTool "Send to Organizer denied by Burp Suite"
+
+        val fixedContent = normalizeHttpContent(content)
+        val request = HttpRequest.httpRequest(toMontoyaService(), fixedContent)
+        api.organizer().sendToOrganizer(request)
+
+        "Request sent to Organizer"
+    }
+}
+
+private fun Server.registerExtraUtilityTools(api: MontoyaApi, config: McpConfig) {
+    mcpTool<HtmlEncode>("HTML-encodes the input string") {
+        api.utilities().htmlUtils().encode(content)
+    }
+
+    mcpTool<HtmlDecode>("HTML-decodes the input string") {
+        api.utilities().htmlUtils().decode(content)
+    }
+
+    mcpTool<AsciiToHex>("Converts an ASCII string to its hexadecimal representation") {
+        api.utilities().stringUtils().convertAsciiToHexString(content)
+    }
+
+    mcpTool<HexToAscii>("Converts a hexadecimal string to ASCII") {
+        api.utilities().stringUtils().convertHexStringToAscii(content)
+    }
+
+    mcpTool<GenerateHash>("Generates a cryptographic hash of the input using the specified algorithm (e.g. SHA_256, MD5)") {
+        val algorithm = try {
+            DigestAlgorithm.valueOf(algorithm.uppercase())
+        } catch (_: IllegalArgumentException) {
+            return@mcpTool "Unknown algorithm '$algorithm'. Example values: MD5, SHA_1, SHA_256, SHA_512."
+        }
+        api.utilities().cryptoUtils().generateDigest(ByteArray.byteArray(content), algorithm).toString()
+    }
+
+    mcpTool<ReadJsonPath>("Reads a value from a JSON document using Burp's JSON path syntax") {
+        api.utilities().jsonUtils().read(json, path) ?: "<no value>"
     }
 }
 
@@ -418,7 +697,11 @@ data class SendHttp1Request(
     val content: String,
     override val targetHostname: String,
     override val targetPort: Int,
-    override val usesHttps: Boolean
+    override val usesHttps: Boolean,
+    val httpMode: String? = null,
+    val redirectionMode: String? = null,
+    val responseTimeoutMillis: Long? = null,
+    val maxResponseLength: Int = 0
 ) : HttpServiceParams
 
 @Serializable
@@ -428,7 +711,10 @@ data class SendHttp2Request(
     val requestBody: String,
     override val targetHostname: String,
     override val targetPort: Int,
-    override val usesHttps: Boolean
+    override val usesHttps: Boolean,
+    val redirectionMode: String? = null,
+    val responseTimeoutMillis: Long? = null,
+    val maxResponseLength: Int = 0
 ) : HttpServiceParams
 
 @Serializable
@@ -511,6 +797,73 @@ data class GetProxyWebsocketHistory(override val count: Int, override val offset
 @Serializable
 data class GetProxyWebsocketHistoryRegex(val regex: String, override val count: Int, override val offset: Int) :
     Paginated
+
+@Serializable
+data class StartAudit(val urls: List<String>)
+
+@Serializable
+data class StartCrawl(val urls: List<String>)
+
+@Serializable
+data class GetScanTaskStatus(val taskId: String)
+
+@Serializable
+data class DeleteScanTask(val taskId: String)
+
+@Serializable
+data class IsInScope(val url: String)
+
+@Serializable
+data class IncludeInScope(val url: String)
+
+@Serializable
+data class ExcludeFromScope(val url: String)
+
+@Serializable
+data class GetSiteMap(override val count: Int, override val offset: Int) : Paginated
+
+@Serializable
+data class GetSiteMapRegex(val regex: String, override val count: Int, override val offset: Int) : Paginated
+
+@Serializable
+data class AddToSiteMap(
+    val content: String,
+    override val targetHostname: String,
+    override val targetPort: Int,
+    override val usesHttps: Boolean
+) : HttpServiceParams
+
+@Serializable
+data class SendToDecoder(val content: String)
+
+@Serializable
+data class SendToComparer(val items: List<String>)
+
+@Serializable
+data class SendToOrganizer(
+    val content: String,
+    override val targetHostname: String,
+    override val targetPort: Int,
+    override val usesHttps: Boolean
+) : HttpServiceParams
+
+@Serializable
+data class HtmlEncode(val content: String)
+
+@Serializable
+data class HtmlDecode(val content: String)
+
+@Serializable
+data class AsciiToHex(val content: String)
+
+@Serializable
+data class HexToAscii(val content: String)
+
+@Serializable
+data class GenerateHash(val content: String, val algorithm: String)
+
+@Serializable
+data class ReadJsonPath(val json: String, val path: String)
 
 @Serializable
 data class GenerateCollaboratorPayload(

@@ -25,6 +25,8 @@ class McpServerIntegrationTest {
 
     init {
         every { persistedObject.getBoolean(any()) } returns true
+        every { persistedObject.getBoolean("enforceScope") } returns false
+        every { persistedObject.getBoolean("requireActionApproval") } returns false
         every { persistedObject.getString(any()) } returns "127.0.0.1"
         every { persistedObject.getInteger("port") } returns testPort
         every { persistedObject.setBoolean(any(), any()) } returns Unit
